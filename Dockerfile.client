@@ -1,0 +1,21 @@
+# ===========================================
+# SalesBook Client Dockerfile (Development)
+# Separate container for frontend dev server
+# ===========================================
+
+FROM node:18-alpine
+
+WORKDIR /app/client
+
+# Install dependencies
+COPY client/package*.json ./
+RUN npm ci
+
+# Copy source (will be overridden by volume mount)
+COPY client/ .
+
+# Expose Vite dev server port
+EXPOSE 5173
+
+# Start dev server with host flag for Docker
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

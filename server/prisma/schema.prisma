@@ -1,0 +1,591 @@
+// SalesBook Prisma Schema
+// Multi-tenant lead generation and CRM platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// Tenant & User Management
+// ===========================================
+
+model Tenant {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(255)
+  slug      String   @unique @db.VarChar(100)
+  status    TenantStatus @default(ACTIVE)
+  settings  Json?    @db.Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  users          User[]
+  leads          Lead[]
+  contacts       Contact[]
+  dataSources    DataSource[]
+  channelConfigs ChannelConfig[]
+  templates      Template[]
+  campaigns      Campaign[]
+  conversations  Conversation[]
+  contactAttempts ContactAttempt[]
+  analyticsDaily AnalyticsDaily[]
+  jobQueue       JobQueue[]
+
+  @@map("tenants")
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+}
+
+model User {
+  id           Int        @id @default(autoincrement())
+  tenantId     Int?       @map("tenant_id")
+  email        String     @unique @db.VarChar(255)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  name         String     @db.VarChar(255)
+  role         UserRole   @default(SALES_REP)
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?  @map("last_login_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  tenant             Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdLeads       Lead[]            @relation("CreatedBy")
+  assignedLeads      Lead[]            @relation("AssignedTo")
+  createdTemplates   Template[]
+  createdCampaigns   Campaign[]
+  assignedConversations Conversation[]
+  refreshTokens      RefreshToken[]
+
+  @@index([tenantId])
+  @@index([email])
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  MANAGER
+  SALES_REP
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  token     String   @unique @db.VarChar(500)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+// ===========================================
+// Lead Management
+// ===========================================
+
+model Lead {
+  id           Int        @id @default(autoincrement())
+  tenantId     Int        @map("tenant_id")
+  companyName  String     @map("company_name") @db.VarChar(255)
+  website      String?    @db.VarChar(500)
+  industry     String?    @db.VarChar(100)
+  size         CompanySize?
+  status       LeadStatus @default(NEW)
+  sourceId     Int?       @map("source_id")
+  tags         Json?      @db.Json
+  customFields Json?      @map("custom_fields") @db.Json
+  createdById  Int?       @map("created_by")
+  assignedToId Int?       @map("assigned_to")
+  isDeleted    Boolean    @default(false) @map("is_deleted")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source            DataSource?         @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  createdBy         User?               @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  assignedTo        User?               @relation("AssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  contacts          Contact[]
+  contactAttempts   ContactAttempt[]
+  conversations     Conversation[]
+  campaignRecipients CampaignRecipient[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([sourceId])
+  @@index([createdById])
+  @@index([assignedToId])
+  @@index([companyName])
+  @@map("leads")
+}
+
+enum CompanySize {
+  MICRO
+  SMALL
+  MEDIUM
+  LARGE
+  ENTERPRISE
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  NEGOTIATION
+  CONVERTED
+  LOST
+}
+
+model Contact {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @map("tenant_id")
+  leadId    Int      @map("lead_id")
+  name      String?  @db.VarChar(255)
+  email     String?  @db.VarChar(255)
+  phone     String?  @db.VarChar(50)
+  position  String?  @db.VarChar(100)
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead              Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contactAttempts   ContactAttempt[]
+  conversations     Conversation[]
+  campaignRecipients CampaignRecipient[]
+
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([email])
+  @@map("contacts")
+}
+
+// ===========================================
+// Data Sources
+// ===========================================
+
+model DataSource {
+  id               Int              @id @default(autoincrement())
+  tenantId         Int              @map("tenant_id")
+  name             String           @db.VarChar(255)
+  type             DataSourceType
+  url              String           @db.VarChar(1000)
+  config           Json             @db.Json
+  proxyConfig      Json?            @map("proxy_config") @db.Json
+  rateLimit        Int?             @map("rate_limit")
+  pollingFrequency String?          @map("polling_frequency") @db.VarChar(50)
+  isActive         Boolean          @default(true) @map("is_active")
+  lastRunAt        DateTime?        @map("last_run_at")
+  lastStatus       DataSourceRunStatus? @map("last_status")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leads  Lead[]
+  runs   DataSourceRun[]
+
+  @@index([tenantId])
+  @@index([isActive])
+  @@map("data_sources")
+}
+
+enum DataSourceType {
+  PLAYWRIGHT
+  API
+  RSS
+  MANUAL
+}
+
+model DataSourceRun {
+  id           Int                 @id @default(autoincrement())
+  dataSourceId Int                 @map("data_source_id")
+  status       DataSourceRunStatus @default(PENDING)
+  leadsFound   Int                 @default(0) @map("leads_found")
+  leadsCreated Int                 @default(0) @map("leads_created")
+  leadsUpdated Int                 @default(0) @map("leads_updated")
+  errorMessage String?             @map("error_message") @db.Text
+  logs         String?             @db.LongText
+  startedAt    DateTime?           @map("started_at")
+  completedAt  DateTime?           @map("completed_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  // Relations
+  dataSource DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+
+  @@index([dataSourceId])
+  @@index([status])
+  @@map("data_source_runs")
+}
+
+enum DataSourceRunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+// ===========================================
+// Communication Channels
+// ===========================================
+
+model ChannelConfig {
+  id          Int         @id @default(autoincrement())
+  tenantId    Int         @map("tenant_id")
+  channelType ChannelType @map("channel_type")
+  provider    String      @db.VarChar(50)
+  name        String      @db.VarChar(255)
+  credentials Json        @db.Json
+  settings    Json?       @db.Json
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaignSteps   CampaignStep[]
+  contactAttempts ContactAttempt[]
+
+  @@index([tenantId])
+  @@index([channelType])
+  @@map("channel_configs")
+}
+
+enum ChannelType {
+  EMAIL_SMTP
+  EMAIL_API
+  SMS
+  WHATSAPP_WEB
+  WHATSAPP_BUSINESS
+  TELEGRAM
+  VOICE
+}
+
+// ===========================================
+// Templates
+// ===========================================
+
+model Template {
+  id          Int         @id @default(autoincrement())
+  tenantId    Int         @map("tenant_id")
+  name        String      @db.VarChar(255)
+  channelType ChannelType @map("channel_type")
+  subject     String?     @db.VarChar(500)
+  body        String      @db.LongText
+  attachments Json?       @db.Json
+  createdById Int?        @map("created_by")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  campaignSteps CampaignStep[]
+
+  @@index([tenantId])
+  @@index([channelType])
+  @@map("templates")
+}
+
+// ===========================================
+// Campaigns
+// ===========================================
+
+model Campaign {
+  id           Int            @id @default(autoincrement())
+  tenantId     Int            @map("tenant_id")
+  name         String         @db.VarChar(255)
+  status       CampaignStatus @default(DRAFT)
+  type         CampaignType   @default(IMMEDIATE)
+  targetFilter Json?          @map("target_filter") @db.Json
+  createdById  Int?           @map("created_by")
+  startedAt    DateTime?      @map("started_at")
+  completedAt  DateTime?      @map("completed_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy      User?               @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  steps          CampaignStep[]
+  recipients     CampaignRecipient[]
+  contactAttempts ContactAttempt[]
+  analyticsDaily AnalyticsDaily[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum CampaignType {
+  IMMEDIATE
+  SCHEDULED
+  SEQUENCE
+}
+
+model CampaignStep {
+  id              Int         @id @default(autoincrement())
+  campaignId      Int         @map("campaign_id")
+  stepOrder       Int         @map("step_order")
+  channelType     ChannelType @map("channel_type")
+  channelConfigId Int         @map("channel_config_id")
+  templateId      Int         @map("template_id")
+  delayDays       Int         @default(0) @map("delay_days")
+  delayHours      Int         @default(0) @map("delay_hours")
+  sendTime        String?     @map("send_time") @db.VarChar(10)
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  campaign      Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channelConfig ChannelConfig  @relation(fields: [channelConfigId], references: [id], onDelete: Cascade)
+  template      Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  contactAttempts ContactAttempt[]
+
+  @@index([campaignId])
+  @@map("campaign_steps")
+}
+
+model CampaignRecipient {
+  id           Int                      @id @default(autoincrement())
+  campaignId   Int                      @map("campaign_id")
+  leadId       Int                      @map("lead_id")
+  contactId    Int                      @map("contact_id")
+  currentStep  Int                      @default(1) @map("current_step")
+  status       CampaignRecipientStatus  @default(PENDING)
+  nextActionAt DateTime?                @map("next_action_at")
+  createdAt    DateTime                 @default(now()) @map("created_at")
+  updatedAt    DateTime                 @updatedAt @map("updated_at")
+
+  // Relations
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead     Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, leadId, contactId])
+  @@index([campaignId])
+  @@index([leadId])
+  @@index([status])
+  @@index([nextActionAt])
+  @@map("campaign_recipients")
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  UNSUBSCRIBED
+  REPLIED
+}
+
+// ===========================================
+// Contact Attempts & Conversations
+// ===========================================
+
+model ContactAttempt {
+  id              Int                   @id @default(autoincrement())
+  tenantId        Int                   @map("tenant_id")
+  leadId          Int                   @map("lead_id")
+  contactId       Int                   @map("contact_id")
+  campaignId      Int?                  @map("campaign_id")
+  campaignStepId  Int?                  @map("campaign_step_id")
+  channelType     ChannelType           @map("channel_type")
+  channelConfigId Int                   @map("channel_config_id")
+  direction       MessageDirection      @default(OUTBOUND)
+  status          ContactAttemptStatus  @default(PENDING)
+  subject         String?               @db.VarChar(500)
+  content         String                @db.LongText
+  externalId      String?               @map("external_id") @db.VarChar(255)
+  metadata        Json?                 @db.Json
+  sentAt          DateTime?             @map("sent_at")
+  deliveredAt     DateTime?             @map("delivered_at")
+  openedAt        DateTime?             @map("opened_at")
+  clickedAt       DateTime?             @map("clicked_at")
+  repliedAt       DateTime?             @map("replied_at")
+  createdAt       DateTime              @default(now()) @map("created_at")
+
+  // Relations
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead          Lead           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contact       Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaign      Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignStep  CampaignStep?  @relation(fields: [campaignStepId], references: [id], onDelete: SetNull)
+  channelConfig ChannelConfig  @relation(fields: [channelConfigId], references: [id], onDelete: Cascade)
+  messages      Message[]
+
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([contactId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([externalId])
+  @@map("contact_attempts")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum ContactAttemptStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+}
+
+model Conversation {
+  id           Int                @id @default(autoincrement())
+  tenantId     Int                @map("tenant_id")
+  leadId       Int                @map("lead_id")
+  contactId    Int                @map("contact_id")
+  channelType  ChannelType        @map("channel_type")
+  lastMessageAt DateTime?         @map("last_message_at")
+  status       ConversationStatus @default(OPEN)
+  assignedToId Int?               @map("assigned_to")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  // Relations
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead       Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contact    Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  assignedTo User?     @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  messages   Message[]
+
+  @@unique([tenantId, leadId, contactId, channelType])
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([status])
+  @@map("conversations")
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+}
+
+model Message {
+  id               Int              @id @default(autoincrement())
+  conversationId   Int              @map("conversation_id")
+  contactAttemptId Int?             @map("contact_attempt_id")
+  direction        MessageDirection
+  content          String           @db.LongText
+  attachments      Json?            @db.Json
+  metadata         Json?            @db.Json
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contactAttempt ContactAttempt? @relation(fields: [contactAttemptId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@map("messages")
+}
+
+// ===========================================
+// Background Jobs
+// ===========================================
+
+model JobQueue {
+  id           Int       @id @default(autoincrement())
+  tenantId     Int?      @map("tenant_id")
+  type         JobType
+  payload      Json      @db.Json
+  priority     Int       @default(5)
+  status       JobStatus @default(PENDING)
+  attempts     Int       @default(0)
+  maxAttempts  Int       @default(3) @map("max_attempts")
+  scheduledAt  DateTime  @default(now()) @map("scheduled_at")
+  startedAt    DateTime? @map("started_at")
+  completedAt  DateTime? @map("completed_at")
+  errorMessage String?   @map("error_message") @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([type])
+  @@map("job_queue")
+}
+
+enum JobType {
+  SCRAPE
+  CAMPAIGN_STEP
+  POLL
+  WEBHOOK
+  CLEANUP
+  EMAIL_SEND
+  SMS_SEND
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  RETRY
+}
+
+// ===========================================
+// Analytics
+// ===========================================
+
+model AnalyticsDaily {
+  id             Int         @id @default(autoincrement())
+  tenantId       Int         @map("tenant_id")
+  date           DateTime    @db.Date
+  channelType    ChannelType @map("channel_type")
+  campaignId     Int?        @map("campaign_id")
+  sentCount      Int         @default(0) @map("sent_count")
+  deliveredCount Int         @default(0) @map("delivered_count")
+  openedCount    Int         @default(0) @map("opened_count")
+  clickedCount   Int         @default(0) @map("clicked_count")
+  repliedCount   Int         @default(0) @map("replied_count")
+  bouncedCount   Int         @default(0) @map("bounced_count")
+  failedCount    Int         @default(0) @map("failed_count")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, date, channelType, campaignId])
+  @@index([tenantId])
+  @@index([date])
+  @@map("analytics_daily")
+}

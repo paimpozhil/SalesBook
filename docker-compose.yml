@@ -1,0 +1,131 @@
+version: '3.8'
+
+# SalesBook Development Docker Compose
+# For production, use docker-compose.prod.yml
+
+services:
+  # ===========================================
+  # MySQL Database
+  # ===========================================
+  db:
+    image: mysql:8.0
+    container_name: salesbook-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: salesbook
+      MYSQL_USER: salesbook
+      MYSQL_PASSWORD: ${DB_PASSWORD:-salesbook123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - salesbook-network
+
+  # ===========================================
+  # Backend Server (Node.js)
+  # ===========================================
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: salesbook-server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: mysql://salesbook:${DB_PASSWORD:-salesbook123}@db:3306/salesbook
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      CLIENT_URL: http://localhost:5173
+      # Pass through optional service credentials
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./server:/app/server
+      - ./server/node_modules:/app/server/node_modules
+      - server_storage:/app/server/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - salesbook-network
+    command: npm run dev
+
+  # ===========================================
+  # Frontend Client (React/Vite)
+  # ===========================================
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: salesbook-client
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:3000/api/v1
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client:/app/client
+      - ./client/node_modules:/app/client/node_modules
+    depends_on:
+      - server
+    networks:
+      - salesbook-network
+    command: npm run dev -- --host
+
+  # ===========================================
+  # Playwright Browser (for scraping)
+  # ===========================================
+  # Uncomment if you need isolated browser environment
+  # playwright:
+  #   image: mcr.microsoft.com/playwright:v1.40.0-focal
+  #   container_name: salesbook-playwright
+  #   restart: unless-stopped
+  #   environment:
+  #     PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+  #   volumes:
+  #     - playwright_browsers:/ms-playwright
+  #   networks:
+  #     - salesbook-network
+  #   command: sleep infinity
+
+# ===========================================
+# Volumes
+# ===========================================
+volumes:
+  db_data:
+    driver: local
+  server_storage:
+    driver: local
+  # playwright_browsers:
+  #   driver: local
+
+# ===========================================
+# Networks
+# ===========================================
+networks:
+  salesbook-network:
+    driver: bridge
