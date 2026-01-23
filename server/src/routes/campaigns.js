@@ -39,7 +39,15 @@ router.get(
     const [campaigns, total] = await Promise.all([
       prisma.campaign.findMany({
         where,
-        include: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          type: true,
+          startedAt: true,
+          scheduledAt: true,
+          completedAt: true,
+          createdAt: true,
           createdBy: { select: { id: true, name: true } },
           _count: { select: { steps: true, recipients: true } },
         },
@@ -73,6 +81,33 @@ router.post(
     const { name, type, targetFilter, steps } = req.body;
     const tenantId = getTenantId(req);
 
+    // If steps provided, fetch channel configs to get channelType
+    let stepsData = undefined;
+    if (steps?.length) {
+      const channelConfigIds = [...new Set(steps.map(s => s.channelConfigId))];
+      const channelConfigs = await prisma.channelConfig.findMany({
+        where: { id: { in: channelConfigIds } },
+        select: { id: true, channelType: true },
+      });
+      const channelTypeMap = channelConfigs.reduce((acc, ch) => {
+        acc[ch.id] = ch.channelType;
+        return acc;
+      }, {});
+
+      stepsData = {
+        create: steps.map((step, idx) => ({
+          stepOrder: idx + 1,
+          channelType: channelTypeMap[step.channelConfigId],
+          channelConfigId: step.channelConfigId,
+          templateId: step.templateId,
+          delayDays: step.delayDays || 0,
+          delayHours: step.delayHours || 0,
+          delayMinutes: step.delayMinutes || 0,
+          sendTime: step.sendTime,
+        })),
+      };
+    }
+
     const campaign = await prisma.campaign.create({
       data: {
         tenantId,
@@ -80,17 +115,7 @@ router.post(
         type,
         targetFilter,
         createdById: req.user.id,
-        steps: steps?.length ? {
-          create: steps.map((step, idx) => ({
-            stepOrder: idx + 1,
-            channelType: step.channelType,
-            channelConfigId: step.channelConfigId,
-            templateId: step.templateId,
-            delayDays: step.delayDays || 0,
-            delayHours: step.delayHours || 0,
-            sendTime: step.sendTime,
-          })),
-        } : undefined,
+        steps: stepsData,
       },
       include: {
         steps: {
@@ -200,6 +225,271 @@ router.delete(
 );
 
 /**
+ * @route   POST /api/v1/campaigns/:id/recipients
+ * @desc    Add recipients to campaign (by leadIds, contactIds, or filters)
+ * @access  Private
+ */
+router.post(
+  '/:id/recipients',
+  requirePermission('campaigns:update'),
+  [
+    param('id').isInt().toInt(),
+    body('leadIds').optional().isArray(),
+    body('contactIds').optional().isArray(),
+    body('filters').optional().isObject(),
+    body('primaryOnly').optional().isBoolean(),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { leadIds, contactIds, filters, primaryOnly = false } = req.body;
+    const tenantId = getTenantId(req);
+
+    const campaign = await prisma.campaign.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!campaign) throw AppError.notFound('Campaign not found');
+
+    if (campaign.status !== 'DRAFT') {
+      throw AppError.badRequest('Can only add recipients to draft campaigns');
+    }
+
+    // If contactIds provided, add those specific contacts
+    if (contactIds?.length) {
+      const contacts = await prisma.contact.findMany({
+        where: {
+          id: { in: contactIds },
+          lead: { tenantId },
+        },
+        include: { lead: true },
+      });
+
+      const recipientData = contacts.map((contact) => ({
+        campaignId: campaign.id,
+        leadId: contact.leadId,
+        contactId: contact.id,
+        status: 'PENDING',
+        currentStep: 1,
+      }));
+
+      // Use createMany with skipDuplicates to avoid errors on re-adding
+      await prisma.campaignRecipient.createMany({
+        data: recipientData,
+        skipDuplicates: true,
+      });
+
+      return success(res, { message: `Added ${contacts.length} recipients`, count: contacts.length });
+    }
+
+    // If leadIds provided, add contacts from those leads
+    if (leadIds?.length) {
+      const contactWhere = {
+        leadId: { in: leadIds },
+        lead: { tenantId },
+      };
+      if (primaryOnly) {
+        contactWhere.isPrimary = true;
+      }
+
+      const contacts = await prisma.contact.findMany({ where: contactWhere });
+
+      const recipientData = contacts.map((contact) => ({
+        campaignId: campaign.id,
+        leadId: contact.leadId,
+        contactId: contact.id,
+        status: 'PENDING',
+        currentStep: 1,
+      }));
+
+      await prisma.campaignRecipient.createMany({
+        data: recipientData,
+        skipDuplicates: true,
+      });
+
+      const msg = primaryOnly
+        ? `Added ${contacts.length} primary contacts from ${leadIds.length} leads`
+        : `Added ${contacts.length} recipients from ${leadIds.length} leads`;
+      return success(res, { message: msg, count: contacts.length });
+    }
+
+    // If filters provided, find leads matching filters and add their contacts
+    if (filters && Object.keys(filters).length > 0) {
+      const leadWhere = { tenantId, isDeleted: false };
+
+      // Apply filters
+      if (filters.status) {
+        leadWhere.status = { in: Array.isArray(filters.status) ? filters.status : [filters.status] };
+      }
+      if (filters.industryIds?.length) {
+        leadWhere.industries = { some: { industryId: { in: filters.industryIds } } };
+      }
+      if (filters.sourceId) {
+        leadWhere.sourceId = filters.sourceId;
+      }
+      if (filters.size) {
+        leadWhere.size = { in: Array.isArray(filters.size) ? filters.size : [filters.size] };
+      }
+      if (filters.search) {
+        leadWhere.OR = [
+          { companyName: { contains: filters.search } },
+          { website: { contains: filters.search } },
+        ];
+      }
+
+      // Find matching leads
+      const matchingLeads = await prisma.lead.findMany({
+        where: leadWhere,
+        select: { id: true },
+      });
+
+      if (matchingLeads.length === 0) {
+        return success(res, { message: 'No leads match the selected filters', count: 0, leadsMatched: 0 });
+      }
+
+      const matchingLeadIds = matchingLeads.map((l) => l.id);
+
+      // Get contacts for those leads
+      const contactWhere = {
+        leadId: { in: matchingLeadIds },
+        OR: [{ email: { not: null } }, { phone: { not: null } }],
+      };
+      if (primaryOnly) {
+        contactWhere.isPrimary = true;
+      }
+
+      const contacts = await prisma.contact.findMany({ where: contactWhere });
+
+      if (contacts.length === 0) {
+        const msg = primaryOnly
+          ? 'Matching leads have no primary contacts with email/phone'
+          : 'Matching leads have no contacts with email/phone';
+        return success(res, { message: msg, count: 0, leadsMatched: matchingLeads.length });
+      }
+
+      const recipientData = contacts.map((contact) => ({
+        campaignId: campaign.id,
+        leadId: contact.leadId,
+        contactId: contact.id,
+        status: 'PENDING',
+        currentStep: 1,
+      }));
+
+      await prisma.campaignRecipient.createMany({
+        data: recipientData,
+        skipDuplicates: true,
+      });
+
+      const msg = primaryOnly
+        ? `Added ${contacts.length} primary contacts from ${matchingLeads.length} matching leads`
+        : `Added ${contacts.length} recipients from ${matchingLeads.length} matching leads`;
+      return success(res, {
+        message: msg,
+        count: contacts.length,
+        leadsMatched: matchingLeads.length,
+      });
+    }
+
+    // If no specific IDs or filters, add all leads with contacts
+    const allContactWhere = {
+      lead: { tenantId, isDeleted: false },
+      OR: [{ email: { not: null } }, { phone: { not: null } }],
+    };
+    if (primaryOnly) {
+      allContactWhere.isPrimary = true;
+    }
+
+    const contacts = await prisma.contact.findMany({ where: allContactWhere });
+
+    const recipientData = contacts.map((contact) => ({
+      campaignId: campaign.id,
+      leadId: contact.leadId,
+      contactId: contact.id,
+      status: 'PENDING',
+      currentStep: 1,
+    }));
+
+    await prisma.campaignRecipient.createMany({
+      data: recipientData,
+      skipDuplicates: true,
+    });
+
+    const msg = primaryOnly
+      ? `Added ${contacts.length} primary contacts (all leads)`
+      : `Added ${contacts.length} recipients (all contacts)`;
+    return success(res, { message: msg, count: contacts.length });
+  })
+);
+
+/**
+ * @route   DELETE /api/v1/campaigns/:id/recipients
+ * @desc    Remove all recipients from campaign
+ * @access  Private
+ */
+router.delete(
+  '/:id/recipients',
+  requirePermission('campaigns:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const campaign = await prisma.campaign.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!campaign) throw AppError.notFound('Campaign not found');
+
+    if (campaign.status !== 'DRAFT') {
+      throw AppError.badRequest('Can only remove recipients from draft campaigns');
+    }
+
+    const deleted = await prisma.campaignRecipient.deleteMany({
+      where: { campaignId: campaign.id },
+    });
+
+    return success(res, { message: `Removed ${deleted.count} recipients`, count: deleted.count });
+  })
+);
+
+/**
+ * @route   DELETE /api/v1/campaigns/:id/recipients/:recipientId
+ * @desc    Remove a single recipient from campaign
+ * @access  Private
+ */
+router.delete(
+  '/:id/recipients/:recipientId',
+  requirePermission('campaigns:update'),
+  [
+    param('id').isInt().toInt(),
+    param('recipientId').isInt().toInt(),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const campaign = await prisma.campaign.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!campaign) throw AppError.notFound('Campaign not found');
+
+    if (campaign.status !== 'DRAFT') {
+      throw AppError.badRequest('Can only remove recipients from draft campaigns');
+    }
+
+    const recipient = await prisma.campaignRecipient.findFirst({
+      where: {
+        id: req.params.recipientId,
+        campaignId: campaign.id,
+      },
+    });
+
+    if (!recipient) throw AppError.notFound('Recipient not found');
+
+    await prisma.campaignRecipient.delete({
+      where: { id: req.params.recipientId },
+    });
+
+    return success(res, { message: 'Recipient removed' });
+  })
+);
+
+/**
  * @route   POST /api/v1/campaigns/:id/start
  * @desc    Start campaign
  * @access  Private
@@ -207,11 +497,20 @@ router.delete(
 router.post(
   '/:id/start',
   requirePermission('campaigns:update'),
-  [param('id').isInt().toInt(), validate],
+  [
+    param('id').isInt().toInt(),
+    body('scheduledAt').optional().isISO8601(),
+    validate,
+  ],
   asyncHandler(async (req, res) => {
+    const { scheduledAt } = req.body;
+
     const campaign = await prisma.campaign.findFirst({
       where: addTenantFilter(req, { id: req.params.id }),
-      include: { steps: true },
+      include: {
+        steps: { orderBy: { stepOrder: 'asc' } },
+        _count: { select: { recipients: true } },
+      },
     });
 
     if (!campaign) throw AppError.notFound('Campaign not found');
@@ -224,17 +523,52 @@ router.post(
       throw AppError.badRequest('Campaign must have at least one step');
     }
 
-    // TODO: Create recipients from target filter and queue first step jobs
+    if (campaign._count.recipients === 0) {
+      throw AppError.badRequest('Campaign must have at least one recipient. Add recipients first.');
+    }
 
-    const updated = await prisma.campaign.update({
-      where: { id: req.params.id },
+    // Calculate nextActionAt based on campaign type
+    let nextActionAt = new Date();
+
+    if (campaign.type === 'SCHEDULED' && scheduledAt) {
+      nextActionAt = new Date(scheduledAt);
+    } else if (campaign.type === 'IMMEDIATE') {
+      nextActionAt = new Date(); // Now
+    }
+    // For SEQUENCE, first step starts immediately, delays apply to subsequent steps
+
+    // Update all pending recipients with nextActionAt
+    await prisma.campaignRecipient.updateMany({
+      where: {
+        campaignId: campaign.id,
+        status: 'PENDING',
+      },
       data: {
-        status: 'ACTIVE',
-        startedAt: campaign.startedAt || new Date(),
+        nextActionAt,
       },
     });
 
-    return success(res, { message: 'Campaign started', campaign: updated });
+    const updateData = {
+      status: 'ACTIVE',
+      startedAt: campaign.startedAt || new Date(),
+    };
+    if (scheduledAt) {
+      updateData.scheduledAt = new Date(scheduledAt);
+    }
+
+    const updated = await prisma.campaign.update({
+      where: { id: req.params.id },
+      data: updateData,
+      include: {
+        _count: { select: { recipients: true, steps: true } },
+      },
+    });
+
+    return success(res, {
+      message: `Campaign started with ${campaign._count.recipients} recipients`,
+      campaign: updated,
+      recipientCount: campaign._count.recipients,
+    });
   })
 );
 
@@ -311,7 +645,43 @@ router.get(
       prisma.campaignRecipient.count({ where }),
     ]);
 
-    return paginated(res, recipients, page, limit, total);
+    // Fetch contact attempts for these recipients to show step history
+    const recipientIds = recipients.map((r) => ({ contactId: r.contactId, leadId: r.leadId }));
+    const contactAttempts = await prisma.contactAttempt.findMany({
+      where: {
+        campaignId: req.params.id,
+        OR: recipientIds,
+      },
+      include: {
+        campaignStep: {
+          select: { id: true, stepOrder: true },
+        },
+      },
+      orderBy: { sentAt: 'asc' },
+    });
+
+    // Group attempts by contactId
+    const attemptsByContact = {};
+    contactAttempts.forEach((attempt) => {
+      const key = attempt.contactId;
+      if (!attemptsByContact[key]) {
+        attemptsByContact[key] = [];
+      }
+      attemptsByContact[key].push({
+        stepOrder: attempt.campaignStep?.stepOrder,
+        status: attempt.status,
+        sentAt: attempt.sentAt,
+        subject: attempt.subject,
+      });
+    });
+
+    // Attach attempts to recipients
+    const recipientsWithHistory = recipients.map((r) => ({
+      ...r,
+      stepHistory: attemptsByContact[r.contactId] || [],
+    }));
+
+    return paginated(res, recipientsWithHistory, page, limit, total);
   })
 );
 

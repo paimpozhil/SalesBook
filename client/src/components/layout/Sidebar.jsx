@@ -1,5 +1,4 @@
 import { NavLink } from 'react-router-dom';
-import { Nav } from 'react-bootstrap';
 import {
   FaHome,
   FaUsers,
@@ -75,7 +74,7 @@ function Sidebar({ collapsed, mobileOpen, onCloseMobile }) {
           </button>
         </div>
 
-        <Nav className="flex-column">
+        <nav className="nav flex-column">
           {navItems.map((section) => (
             <div key={section.section}>
               {!collapsed && (
@@ -88,21 +87,21 @@ function Sidebar({ collapsed, mobileOpen, onCloseMobile }) {
                 }
 
                 return (
-                  <Nav.Link
+                  <NavLink
                     key={item.path}
-                    as={NavLink}
                     to={item.path}
                     end={item.path === '/'}
                     onClick={onCloseMobile}
+                    className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
                   >
                     <item.icon />
                     <span className="nav-text">{item.label}</span>
-                  </Nav.Link>
+                  </NavLink>
                 );
               })}
             </div>
           ))}
-        </Nav>
+        </nav>
       </aside>
     </>
   );

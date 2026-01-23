@@ -27,7 +27,7 @@ module.exports = {
   // Rate Limiting
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW, 10) * 60 * 1000 || 15 * 60 * 1000, // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
+    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 5000, // Increased for development
   },
 
   // Email - SMTP
@@ -76,7 +76,7 @@ module.exports = {
 
   // Background Jobs
   jobs: {
-    pollInterval: parseInt(process.env.JOB_POLL_INTERVAL, 10) || 5000,
+    pollInterval: parseInt(process.env.JOB_POLL_INTERVAL, 10) || 30000, // 30 seconds (was 5s)
     concurrency: parseInt(process.env.JOB_CONCURRENCY, 10) || 5,
     timeout: parseInt(process.env.JOB_TIMEOUT, 10) || 300000, // 5 minutes
   },

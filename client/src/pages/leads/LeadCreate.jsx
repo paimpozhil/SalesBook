@@ -1,14 +1,29 @@
-import { useState } from 'react';
-import { Card, Form, Button, Row, Col } from 'react-bootstrap';
+import { useState, useEffect } from 'react';
+import { Card, Form, Button, Row, Col, Badge } from 'react-bootstrap';
 import { Link, useNavigate } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
-import { FaArrowLeft, FaPlus, FaTrash } from 'react-icons/fa';
+import { FaArrowLeft, FaPlus, FaTrash, FaTimes } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 
 function LeadCreate() {
   const [isLoading, setIsLoading] = useState(false);
+  const [industries, setIndustries] = useState([]);
+  const [selectedIndustries, setSelectedIndustries] = useState([]);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchIndustries();
+  }, []);
+
+  const fetchIndustries = async () => {
+    try {
+      const response = await api.get('/industries');
+      setIndustries(response.data.data);
+    } catch (error) {
+      console.error('Failed to fetch industries:', error);
+    }
+  };
 
   const {
     register,
@@ -19,7 +34,6 @@ function LeadCreate() {
     defaultValues: {
       companyName: '',
       website: '',
-      industry: '',
       size: '',
       contacts: [{ name: '', email: '', phone: '', position: '' }],
     },
@@ -41,6 +55,7 @@ function LeadCreate() {
 
       const response = await api.post('/leads', {
         ...data,
+        industryIds: selectedIndustries.map((ind) => ind.id),
         contacts: contacts.length > 0 ? contacts : undefined,
       });
 
@@ -51,6 +66,21 @@ function LeadCreate() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleIndustrySelect = (e) => {
+    const industryId = parseInt(e.target.value);
+    if (!industryId) return;
+
+    const industry = industries.find((ind) => ind.id === industryId);
+    if (industry && !selectedIndustries.find((ind) => ind.id === industryId)) {
+      setSelectedIndustries([...selectedIndustries, industry]);
+    }
+    e.target.value = '';
+  };
+
+  const removeIndustry = (industryId) => {
+    setSelectedIndustries(selectedIndustries.filter((ind) => ind.id !== industryId));
   };
 
   return (
@@ -98,12 +128,35 @@ function LeadCreate() {
                   </Col>
                   <Col md={6}>
                     <Form.Group>
-                      <Form.Label>Industry</Form.Label>
-                      <Form.Control
-                        type="text"
-                        placeholder="e.g., Technology, Finance"
-                        {...register('industry')}
-                      />
+                      <Form.Label>Industries</Form.Label>
+                      <Form.Select onChange={handleIndustrySelect} defaultValue="">
+                        <option value="">Select industries...</option>
+                        {industries
+                          .filter((ind) => !selectedIndustries.find((s) => s.id === ind.id))
+                          .map((industry) => (
+                            <option key={industry.id} value={industry.id}>
+                              {industry.name}
+                            </option>
+                          ))}
+                      </Form.Select>
+                      {selectedIndustries.length > 0 && (
+                        <div className="d-flex flex-wrap gap-1 mt-2">
+                          {selectedIndustries.map((industry) => (
+                            <Badge
+                              key={industry.id}
+                              bg="info"
+                              className="d-flex align-items-center gap-1"
+                            >
+                              {industry.name}
+                              <FaTimes
+                                size={10}
+                                style={{ cursor: 'pointer' }}
+                                onClick={() => removeIndustry(industry.id)}
+                              />
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
                     </Form.Group>
                   </Col>
                   <Col md={6}>

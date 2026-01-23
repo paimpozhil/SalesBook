@@ -6,24 +6,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('Seeding database...');
 
-  // Create super admin user (no tenant)
-  const superAdminPassword = await bcrypt.hash('Admin123!', 12);
-
-  const superAdmin = await prisma.user.upsert({
-    where: { email: 'admin@salesbook.local' },
-    update: {},
-    create: {
-      email: 'admin@salesbook.local',
-      passwordHash: superAdminPassword,
-      name: 'Super Admin',
-      role: 'SUPER_ADMIN',
-      status: 'ACTIVE',
-    },
-  });
-
-  console.log('Created super admin:', superAdmin.email);
-
-  // Create demo tenant
+  // Create demo tenant first (so we can assign super admin to it)
   const demoTenant = await prisma.tenant.upsert({
     where: { slug: 'demo-company' },
     update: {},
@@ -36,6 +19,24 @@ async function main() {
   });
 
   console.log('Created demo tenant:', demoTenant.name);
+
+  // Create super admin user (assigned to demo tenant for data operations)
+  const superAdminPassword = await bcrypt.hash('Admin123!', 12);
+
+  const superAdmin = await prisma.user.upsert({
+    where: { email: 'admin@salesbook.local' },
+    update: { tenantId: demoTenant.id },
+    create: {
+      tenantId: demoTenant.id,
+      email: 'admin@salesbook.local',
+      passwordHash: superAdminPassword,
+      name: 'Super Admin',
+      role: 'SUPER_ADMIN',
+      status: 'ACTIVE',
+    },
+  });
+
+  console.log('Created super admin:', superAdmin.email);
 
   // Create tenant admin
   const tenantAdminPassword = await bcrypt.hash('Demo123!', 12);

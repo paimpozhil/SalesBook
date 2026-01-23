@@ -22,6 +22,9 @@ const conversationRoutes = require('./routes/conversations');
 const analyticsRoutes = require('./routes/analytics');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
+const industryRoutes = require('./routes/industries');
+const noteRoutes = require('./routes/notes');
+const activityRoutes = require('./routes/activity');
 
 // Initialize express app
 const app = express();
@@ -56,10 +59,11 @@ if (config.env !== 'test') {
   }));
 }
 
-// Rate limiting
+// Rate limiting (skip in development)
 const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
+  skip: () => config.env === 'development', // Skip rate limiting in development
   message: {
     success: false,
     error: {
@@ -75,7 +79,7 @@ app.use('/api', limiter);
 // Stricter rate limit for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 5, // 5 attempts per minute
+  max: 50, // 50 attempts per minute (increased for development)
   message: {
     success: false,
     error: {
@@ -110,6 +114,9 @@ app.use('/api/v1/conversations', conversationRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/webhooks', webhookRoutes);
+app.use('/api/v1/industries', industryRoutes);
+app.use('/api/v1/notes', noteRoutes);
+app.use('/api/v1/activity', activityRoutes);
 
 // Serve static files in production
 if (config.env === 'production') {

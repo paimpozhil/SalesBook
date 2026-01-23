@@ -35,6 +35,8 @@ model Tenant {
   contactAttempts ContactAttempt[]
   analyticsDaily AnalyticsDaily[]
   jobQueue       JobQueue[]
+  industries     Industry[]
+  notes          Note[]
 
   @@map("tenants")
 }
@@ -65,6 +67,7 @@ model User {
   createdCampaigns   Campaign[]
   assignedConversations Conversation[]
   refreshTokens      RefreshToken[]
+  notes              Note[]
 
   @@index([tenantId])
   @@index([email])
@@ -108,7 +111,6 @@ model Lead {
   tenantId     Int        @map("tenant_id")
   companyName  String     @map("company_name") @db.VarChar(255)
   website      String?    @db.VarChar(500)
-  industry     String?    @db.VarChar(100)
   size         CompanySize?
   status       LeadStatus @default(NEW)
   sourceId     Int?       @map("source_id")
@@ -129,6 +131,8 @@ model Lead {
   contactAttempts   ContactAttempt[]
   conversations     Conversation[]
   campaignRecipients CampaignRecipient[]
+  industries        LeadIndustry[]
+  notes             Note[]
 
   @@index([tenantId])
   @@index([status])
@@ -137,6 +141,36 @@ model Lead {
   @@index([assignedToId])
   @@index([companyName])
   @@map("leads")
+}
+
+model Industry {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @map("tenant_id")
+  name      String   @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leads  LeadIndustry[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("industries")
+}
+
+model LeadIndustry {
+  id         Int @id @default(autoincrement())
+  leadId     Int @map("lead_id")
+  industryId Int @map("industry_id")
+
+  // Relations
+  lead     Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  industry Industry @relation(fields: [industryId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, industryId])
+  @@index([leadId])
+  @@index([industryId])
+  @@map("lead_industries")
 }
 
 enum CompanySize {
@@ -181,6 +215,26 @@ model Contact {
   @@map("contacts")
 }
 
+model Note {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int      @map("tenant_id")
+  leadId      Int      @map("lead_id")
+  content     String   @db.Text
+  createdById Int?     @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead      Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([createdById])
+  @@map("notes")
+}
+
 // ===========================================
 // Data Sources
 // ===========================================
@@ -190,14 +244,18 @@ model DataSource {
   tenantId         Int              @map("tenant_id")
   name             String           @db.VarChar(255)
   type             DataSourceType
-  url              String           @db.VarChar(1000)
-  config           Json             @db.Json
+  url              String?          @db.VarChar(1000)
+  config           Json?            @db.Json
   proxyConfig      Json?            @map("proxy_config") @db.Json
   rateLimit        Int?             @map("rate_limit")
   pollingFrequency String?          @map("polling_frequency") @db.VarChar(50)
   isActive         Boolean          @default(true) @map("is_active")
   lastRunAt        DateTime?        @map("last_run_at")
   lastStatus       DataSourceRunStatus? @map("last_status")
+  // File upload fields
+  fileName         String?          @map("file_name") @db.VarChar(255)
+  fileSize         Int?             @map("file_size")
+  recordCount      Int?             @map("record_count")
   createdAt        DateTime         @default(now()) @map("created_at")
   updatedAt        DateTime         @updatedAt @map("updated_at")
 
@@ -216,6 +274,8 @@ enum DataSourceType {
   API
   RSS
   MANUAL
+  JSON
+  CSV
 }
 
 model DataSourceRun {
@@ -321,6 +381,7 @@ model Campaign {
   targetFilter Json?          @map("target_filter") @db.Json
   createdById  Int?           @map("created_by")
   startedAt    DateTime?      @map("started_at")
+  scheduledAt  DateTime?      @map("scheduled_at")
   completedAt  DateTime?      @map("completed_at")
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
@@ -360,6 +421,7 @@ model CampaignStep {
   templateId      Int         @map("template_id")
   delayDays       Int         @default(0) @map("delay_days")
   delayHours      Int         @default(0) @map("delay_hours")
+  delayMinutes    Int         @default(0) @map("delay_minutes")
   sendTime        String?     @map("send_time") @db.VarChar(10)
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @updatedAt @map("updated_at")

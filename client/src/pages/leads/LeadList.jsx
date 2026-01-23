@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Form, Row, Col, Badge, Pagination } from 'react-bootstrap';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { FaPlus, FaSearch, FaEye, FaFilter } from 'react-icons/fa';
+import { FaPlus, FaSearch, FaEye, FaFilter, FaTrash, FaUsers } from 'react-icons/fa';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 
@@ -24,6 +24,7 @@ function LeadList() {
   const [filters, setFilters] = useState({
     search: searchParams.get('search') || '',
     status: searchParams.get('status') || '',
+    includeDeleted: searchParams.get('includeDeleted') || '',
   });
 
   useEffect(() => {
@@ -38,6 +39,7 @@ function LeadList() {
       params.append('limit', 20);
       if (searchParams.get('search')) params.append('search', searchParams.get('search'));
       if (searchParams.get('status')) params.append('status', searchParams.get('status'));
+      if (searchParams.get('includeDeleted')) params.append('includeDeleted', searchParams.get('includeDeleted'));
 
       const response = await api.get(`/leads?${params.toString()}`);
       setLeads(response.data.data);
@@ -54,6 +56,7 @@ function LeadList() {
     const params = new URLSearchParams();
     if (filters.search) params.set('search', filters.search);
     if (filters.status) params.set('status', filters.status);
+    if (filters.includeDeleted) params.set('includeDeleted', filters.includeDeleted);
     params.set('page', '1');
     setSearchParams(params);
   };
@@ -112,7 +115,7 @@ function LeadList() {
         <Card.Body>
           <Form onSubmit={handleSearch}>
             <Row className="g-3">
-              <Col md={6}>
+              <Col md={5}>
                 <div className="input-group">
                   <span className="input-group-text">
                     <FaSearch />
@@ -125,7 +128,7 @@ function LeadList() {
                   />
                 </div>
               </Col>
-              <Col md={4}>
+              <Col md={3}>
                 <Form.Select
                   value={filters.status}
                   onChange={(e) => setFilters({ ...filters, status: e.target.value })}
@@ -137,6 +140,16 @@ function LeadList() {
                   <option value="NEGOTIATION">Negotiation</option>
                   <option value="CONVERTED">Converted</option>
                   <option value="LOST">Lost</option>
+                </Form.Select>
+              </Col>
+              <Col md={2}>
+                <Form.Select
+                  value={filters.includeDeleted}
+                  onChange={(e) => setFilters({ ...filters, includeDeleted: e.target.value })}
+                >
+                  <option value="">Active Only</option>
+                  <option value="true">All (incl. deleted)</option>
+                  <option value="only">Deleted Only</option>
                 </Form.Select>
               </Col>
               <Col md={2}>
@@ -178,9 +191,18 @@ function LeadList() {
               </thead>
               <tbody>
                 {leads.map((lead) => (
-                  <tr key={lead.id} className="cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
+                  <tr
+                    key={lead.id}
+                    className={`cursor-pointer ${lead.isDeleted ? 'table-secondary text-muted' : ''}`}
+                    onClick={() => navigate(`/leads/${lead.id}`)}
+                  >
                     <td>
                       <strong>{lead.companyName}</strong>
+                      {lead.isDeleted && (
+                        <Badge bg="danger" className="ms-2" title="Deleted">
+                          <FaTrash size={10} />
+                        </Badge>
+                      )}
                       {lead.website && (
                         <div className="small text-muted">{lead.website}</div>
                       )}
@@ -202,7 +224,22 @@ function LeadList() {
                         </Badge>
                       )}
                     </td>
-                    <td>{lead.industry || '-'}</td>
+                    <td>
+                      {lead.industries?.length > 0 ? (
+                        <div className="d-flex flex-wrap gap-1">
+                          {lead.industries.slice(0, 2).map((li) => (
+                            <Badge key={li.industry.id} bg="info" className="small">
+                              {li.industry.name}
+                            </Badge>
+                          ))}
+                          {lead.industries.length > 2 && (
+                            <Badge bg="secondary">+{lead.industries.length - 2}</Badge>
+                          )}
+                        </div>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
                     <td>
                       <Badge bg={STATUS_COLORS[lead.status] || 'secondary'}>
                         {lead.status}

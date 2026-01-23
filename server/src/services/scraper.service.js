@@ -71,7 +71,6 @@ class ScraperService {
         data: {
           lastRunAt: new Date(),
           lastStatus: 'SUCCESS',
-          lastError: null,
         },
       });
 
@@ -88,7 +87,6 @@ class ScraperService {
         data: {
           lastRunAt: new Date(),
           lastStatus: 'FAILED',
-          lastError: error,
         },
       });
     }
@@ -118,10 +116,12 @@ class ScraperService {
 
     try {
       // Navigate to URL
-      await page.goto(dataSource.url, { waitUntil: 'networkidle' });
+      logger.info(`Navigating to ${dataSource.url}`);
+      await page.goto(dataSource.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
       // Execute custom script if provided
       const scriptConfig = dataSource.config?.script || {};
+      logger.info(`Script config: selector=${!!scriptConfig.selector}, code=${!!scriptConfig.code}, codeLength=${scriptConfig.code?.length || 0}`);
 
       // Default extraction logic - can be customized via config
       if (scriptConfig.selector) {
@@ -144,17 +144,25 @@ class ScraperService {
           }
         }
       } else if (scriptConfig.code) {
-        // Execute custom JavaScript code
-        const results = await page.evaluate(scriptConfig.code);
+        // Execute full Playwright script (not just browser-side code)
+        // The script has access to: page, browser, context, logger
+        logger.info('Executing custom Playwright script...');
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const scraperFn = new AsyncFunction('page', 'browser', 'context', 'logger', scriptConfig.code);
+        const results = await scraperFn(page, browser, context, logger);
+
+        logger.info(`Script returned ${Array.isArray(results) ? results.length : 0} results`);
 
         if (Array.isArray(results)) {
           for (const leadData of results) {
             if (leadData && (leadData.companyName || leadData.email)) {
-              await this.saveLead(dataSource, leadData);
-              leadsCollected++;
+              const saved = await this.saveLead(dataSource, leadData);
+              if (saved) leadsCollected++;
             }
           }
         }
+      } else {
+        logger.warn('No script.selector or script.code found in data source config');
       }
 
       // Handle pagination if configured
@@ -346,24 +354,29 @@ class ScraperService {
       return null;
     }
 
+    // Store extra fields in customFields (Lead model doesn't have address, city, etc.)
+    const customFields = {
+      ...(leadData.customFields || {}),
+      ...(leadData.notes && { notes: leadData.notes }),
+      ...(leadData.city && { city: leadData.city }),
+      ...(leadData.address && { address: leadData.address }),
+      ...(leadData.state && { state: leadData.state }),
+      ...(leadData.country && { country: leadData.country }),
+      ...(leadData.postalCode && { postalCode: leadData.postalCode }),
+    };
+
     // Create the lead
     const lead = await prisma.lead.create({
       data: {
         tenantId: dataSource.tenantId,
-        dataSourceId: dataSource.id,
+        sourceId: dataSource.id,
         companyName: leadData.companyName || 'Unknown Company',
-        website: leadData.website,
-        industry: leadData.industry,
-        size: leadData.size,
+        website: leadData.website || null,
+        industry: leadData.industry || null,
+        size: leadData.size || null,
         status: 'NEW',
-        address: leadData.address,
-        city: leadData.city,
-        state: leadData.state,
-        country: leadData.country,
-        postalCode: leadData.postalCode,
-        notes: leadData.notes,
         tags: leadData.tags || [],
-        customFields: leadData.customFields || {},
+        customFields: Object.keys(customFields).length > 0 ? customFields : {},
       },
     });
 
@@ -373,10 +386,10 @@ class ScraperService {
         data: {
           tenantId: dataSource.tenantId,
           leadId: lead.id,
-          name: leadData.contactName || 'Unknown',
-          email: leadData.email,
-          phone: leadData.phone,
-          position: leadData.position,
+          name: leadData.contactName || null,
+          email: leadData.email || null,
+          phone: leadData.phone || null,
+          position: leadData.position || null,
           isPrimary: true,
         },
       });

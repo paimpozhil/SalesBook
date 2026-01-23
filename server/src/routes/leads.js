@@ -8,6 +8,7 @@ const { asyncHandler } = require('../middleware/errorHandler');
 const prisma = require('../config/database');
 const AppError = require('../utils/AppError');
 const { success, paginated, noContent, created } = require('../utils/response');
+const industryService = require('../services/industry.service');
 
 const router = express.Router();
 
@@ -26,11 +27,12 @@ router.get(
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
     query('status').optional(),
-    query('industry').optional(),
+    query('industryId').optional(),
     query('size').optional(),
     query('search').optional().trim(),
     query('sourceId').optional().isInt().toInt(),
     query('assignedTo').optional().isInt().toInt(),
+    query('includeDeleted').optional().isIn(['true', 'false', 'only']),
     validate,
   ],
   asyncHandler(async (req, res) => {
@@ -38,14 +40,23 @@ router.get(
     const limit = req.query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where = addTenantFilter(req, { isDeleted: false });
+    // Handle deleted filter: 'true' = include all, 'only' = only deleted, default = exclude deleted
+    let deletedFilter = { isDeleted: false };
+    if (req.query.includeDeleted === 'true') {
+      deletedFilter = {}; // Include all
+    } else if (req.query.includeDeleted === 'only') {
+      deletedFilter = { isDeleted: true }; // Only deleted
+    }
+
+    const where = addTenantFilter(req, deletedFilter);
 
     // Filters
     if (req.query.status) {
       where.status = { in: req.query.status.split(',') };
     }
-    if (req.query.industry) {
-      where.industry = { in: req.query.industry.split(',') };
+    if (req.query.industryId) {
+      const industryIds = req.query.industryId.split(',').map(id => parseInt(id, 10));
+      where.industries = { some: { industryId: { in: industryIds } } };
     }
     if (req.query.size) {
       where.size = { in: req.query.size.split(',') };
@@ -78,6 +89,9 @@ router.get(
           assignedTo: {
             select: { id: true, name: true },
           },
+          industries: {
+            include: { industry: true },
+          },
           _count: {
             select: { contacts: true },
           },
@@ -103,28 +117,28 @@ router.post(
   requirePermission('leads:create'),
   [
     body('companyName').trim().isLength({ min: 1, max: 255 }).withMessage('Company name required'),
-    body('website').optional({ nullable: true }).isURL(),
-    body('industry').optional({ nullable: true }).isLength({ max: 100 }),
+    body('website').optional({ values: 'falsy' }).isURL(),
+    body('industryIds').optional().isArray(),
+    body('industryIds.*').optional().isInt(),
     body('size').optional({ nullable: true }).isIn(['MICRO', 'SMALL', 'MEDIUM', 'LARGE', 'ENTERPRISE']),
     body('status').optional().isIn(['NEW', 'CONTACTED', 'QUALIFIED', 'NEGOTIATION', 'CONVERTED', 'LOST']),
     body('tags').optional().isArray(),
     body('contacts').optional().isArray(),
-    body('contacts.*.name').optional({ nullable: true }).trim(),
-    body('contacts.*.email').optional({ nullable: true }).isEmail(),
-    body('contacts.*.phone').optional({ nullable: true }),
-    body('contacts.*.position').optional({ nullable: true }),
+    body('contacts.*.name').optional({ values: 'falsy' }).trim(),
+    body('contacts.*.email').optional({ values: 'falsy' }).isEmail(),
+    body('contacts.*.phone').optional({ values: 'falsy' }),
+    body('contacts.*.position').optional({ values: 'falsy' }),
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { companyName, website, industry, size, status, tags, contacts, customFields } = req.body;
+    const { companyName, website, industryIds, size, status, tags, contacts, customFields } = req.body;
     const tenantId = getTenantId(req);
 
     const lead = await prisma.lead.create({
       data: {
         tenantId,
         companyName,
-        website,
-        industry,
+        website: website || null,
         size,
         status: status || 'NEW',
         tags: tags || [],
@@ -143,10 +157,25 @@ router.post(
       },
       include: {
         contacts: true,
+        industries: { include: { industry: true } },
       },
     });
 
-    return created(res, lead);
+    // Link industries if provided
+    if (industryIds && industryIds.length > 0) {
+      await industryService.linkIndustriesToLead(lead.id, industryIds);
+    }
+
+    // Refetch to get industries
+    const updatedLead = await prisma.lead.findUnique({
+      where: { id: lead.id },
+      include: {
+        contacts: true,
+        industries: { include: { industry: true } },
+      },
+    });
+
+    return created(res, updatedLead);
   })
 );
 
@@ -167,6 +196,7 @@ router.get(
         source: { select: { id: true, name: true, type: true } },
         createdBy: { select: { id: true, name: true } },
         assignedTo: { select: { id: true, name: true } },
+        industries: { include: { industry: true } },
         _count: {
           select: {
             contactAttempts: true,
@@ -199,7 +229,7 @@ router.patch(
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { companyName, website, industry, size, status, tags, customFields, assignedToId } = req.body;
+    const { companyName, website, industryIds, size, status, tags, customFields, assignedToId } = req.body;
 
     // Verify lead exists
     const existing = await prisma.lead.findFirst({
@@ -215,17 +245,33 @@ router.patch(
       data: {
         ...(companyName && { companyName }),
         ...(website !== undefined && { website }),
-        ...(industry !== undefined && { industry }),
         ...(size !== undefined && { size }),
         ...(status && { status }),
         ...(tags && { tags }),
         ...(customFields && { customFields }),
         ...(assignedToId !== undefined && { assignedToId }),
       },
-      include: { contacts: true },
+      include: {
+        contacts: true,
+        industries: { include: { industry: true } },
+      },
     });
 
-    return success(res, lead);
+    // Update industries if provided
+    if (industryIds !== undefined) {
+      await industryService.linkIndustriesToLead(lead.id, industryIds || []);
+    }
+
+    // Refetch to get updated industries
+    const updatedLead = await prisma.lead.findUnique({
+      where: { id: req.params.id },
+      include: {
+        contacts: true,
+        industries: { include: { industry: true } },
+      },
+    });
+
+    return success(res, updatedLead);
   })
 );
 

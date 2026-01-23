@@ -24,11 +24,13 @@ const requireTenant = (req, res, next) => {
 
 /**
  * Get tenant ID from request
- * Returns null for super admins operating globally
+ * Returns null for super admins operating globally (reads)
+ * For super admins creating resources, falls back to their assigned tenantId
  * @param {Object} req - Express request object
+ * @param {boolean} requireForCreate - If true, returns user's tenantId as fallback for SUPER_ADMIN
  * @returns {number|null}
  */
-const getTenantId = (req) => {
+const getTenantId = (req, requireForCreate = true) => {
   if (!req.user) {
     return null;
   }
@@ -39,7 +41,11 @@ const getTenantId = (req) => {
     if (specifiedTenantId) {
       return parseInt(specifiedTenantId, 10);
     }
-    // Return null for global operations
+    // For create operations, fall back to user's assigned tenantId
+    if (requireForCreate && req.user.tenantId) {
+      return req.user.tenantId;
+    }
+    // Return null for global read operations
     return null;
   }
 

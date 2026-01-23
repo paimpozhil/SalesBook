@@ -15,6 +15,60 @@ router.use(authenticate);
 router.use(requireTenant);
 
 /**
+ * @route   POST /api/v1/contacts
+ * @desc    Create a new contact
+ * @access  Private
+ */
+router.post(
+  '/',
+  requirePermission('contacts:create'),
+  [
+    body('leadId').isInt().withMessage('Lead ID is required'),
+    body('name').optional({ values: 'falsy' }).trim(),
+    body('email').optional({ values: 'falsy' }).isEmail(),
+    body('phone').optional({ values: 'falsy' }),
+    body('position').optional({ values: 'falsy' }),
+    body('isPrimary').optional().isBoolean(),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { leadId, name, email, phone, position, isPrimary } = req.body;
+    const tenantId = getTenantId(req);
+
+    // Verify lead exists and belongs to tenant
+    const lead = await prisma.lead.findFirst({
+      where: addTenantFilter(req, { id: leadId, isDeleted: false }),
+    });
+
+    if (!lead) {
+      throw AppError.notFound('Lead not found');
+    }
+
+    // If setting as primary, unset other primaries
+    if (isPrimary) {
+      await prisma.contact.updateMany({
+        where: { leadId, isPrimary: true },
+        data: { isPrimary: false },
+      });
+    }
+
+    const contact = await prisma.contact.create({
+      data: {
+        tenantId,
+        leadId,
+        name,
+        email,
+        phone,
+        position,
+        isPrimary: isPrimary || false,
+      },
+    });
+
+    return created(res, contact);
+  })
+);
+
+/**
  * @route   GET /api/v1/contacts/:id
  * @desc    Get contact by ID
  * @access  Private
@@ -51,10 +105,10 @@ router.patch(
   requirePermission('contacts:update'),
   [
     param('id').isInt().toInt(),
-    body('name').optional({ nullable: true }).trim(),
-    body('email').optional({ nullable: true }).isEmail(),
-    body('phone').optional({ nullable: true }),
-    body('position').optional({ nullable: true }),
+    body('name').optional({ values: 'falsy' }).trim(),
+    body('email').optional({ values: 'falsy' }).isEmail(),
+    body('phone').optional({ values: 'falsy' }),
+    body('position').optional({ values: 'falsy' }),
     body('isPrimary').optional().isBoolean(),
     validate,
   ],

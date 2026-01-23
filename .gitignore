@@ -60,3 +60,10 @@ docker/nginx/ssl/*.crt
 .cache/
 tmp/
 temp/
+
+# Custom scraper scripts (local only)
+server/scripts/nasscom.js
+server/scripts/*.local.js
+nasscom_companies.json
+nasscom_companies.csv
+error_screenshot.png

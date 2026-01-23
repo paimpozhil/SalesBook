@@ -1,15 +1,23 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge } from 'react-bootstrap';
-import { FaPlus, FaDatabase, FaPlay, FaEdit, FaTrash } from 'react-icons/fa';
+import { FaPlus, FaDatabase, FaTrash, FaFileAlt, FaFileCode } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import AddDataSourceModal from '../../components/data-sources/AddDataSourceModal';
 
 const TYPE_COLORS = {
   PLAYWRIGHT: 'primary',
   API: 'success',
   RSS: 'info',
   MANUAL: 'secondary',
+  JSON: 'warning',
+  CSV: 'dark',
+};
+
+const TYPE_ICONS = {
+  JSON: <FaFileCode className="me-1" />,
+  CSV: <FaFileAlt className="me-1" />,
 };
 
 const STATUS_COLORS = {
@@ -22,6 +30,7 @@ const STATUS_COLORS = {
 function DataSourceList() {
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
 
   useEffect(() => {
     fetchSources();
@@ -33,19 +42,32 @@ function DataSourceList() {
       setSources(response.data.data);
     } catch (error) {
       console.error('Failed to fetch sources:', error);
+      toast.error('Failed to load data sources');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRun = async (id) => {
+  const handleDelete = async (id, name) => {
+    if (!window.confirm(`Are you sure you want to delete "${name}"?`)) {
+      return;
+    }
+
     try {
-      await api.post(`/data-sources/${id}/run`);
-      toast.success('Scrape job queued');
+      await api.delete(`/data-sources/${id}`);
+      toast.success('Data source deleted');
       fetchSources();
     } catch (error) {
-      console.error('Failed to trigger run:', error);
+      console.error('Failed to delete source:', error);
+      toast.error('Failed to delete data source');
     }
+  };
+
+  const formatFileSize = (bytes) => {
+    if (!bytes) return '-';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   if (loading) {
@@ -56,9 +78,9 @@ function DataSourceList() {
     <div>
       <div className="page-header">
         <h1>Data Sources</h1>
-        <Button variant="primary">
+        <Button variant="primary" onClick={() => setShowAddModal(true)}>
           <FaPlus className="me-2" />
-          Add Source
+          Import Data
         </Button>
       </div>
 
@@ -66,9 +88,11 @@ function DataSourceList() {
         {sources.length === 0 ? (
           <Card.Body className="text-center py-5">
             <FaDatabase size={48} className="text-muted mb-3" />
-            <h5>No data sources configured</h5>
-            <p className="text-muted">Set up scrapers, APIs, or RSS feeds to automatically collect leads.</p>
-            <Button variant="primary">Add Data Source</Button>
+            <h5>No data sources yet</h5>
+            <p className="text-muted">Import leads from JSON or CSV files to get started.</p>
+            <Button variant="primary" onClick={() => setShowAddModal(true)}>
+              Import Data
+            </Button>
           </Card.Body>
         ) : (
           <Table responsive hover className="mb-0">
@@ -76,11 +100,11 @@ function DataSourceList() {
               <tr>
                 <th>Name</th>
                 <th>Type</th>
-                <th>URL</th>
-                <th>Last Run</th>
-                <th>Status</th>
+                <th>File / Source</th>
+                <th>Records</th>
                 <th>Leads</th>
-                <th>Active</th>
+                <th>Imported</th>
+                <th>Status</th>
                 <th></th>
               </tr>
             </thead>
@@ -92,44 +116,51 @@ function DataSourceList() {
                   </td>
                   <td>
                     <Badge bg={TYPE_COLORS[source.type]}>
+                      {TYPE_ICONS[source.type]}
                       {source.type}
                     </Badge>
                   </td>
                   <td className="text-truncate" style={{ maxWidth: '200px' }}>
-                    {source.url}
+                    {source.fileName ? (
+                      <span className="text-muted" title={source.fileName}>
+                        {source.fileName}
+                        {source.fileSize && (
+                          <span className="ms-1 small">({formatFileSize(source.fileSize)})</span>
+                        )}
+                      </span>
+                    ) : source.url ? (
+                      <a href={source.url} target="_blank" rel="noopener noreferrer">
+                        {source.url}
+                      </a>
+                    ) : (
+                      '-'
+                    )}
                   </td>
+                  <td>{source.recordCount || '-'}</td>
+                  <td>{source._count?.leads || 0}</td>
                   <td>
                     {source.lastRunAt
-                      ? new Date(source.lastRunAt).toLocaleString()
-                      : 'Never'}
+                      ? new Date(source.lastRunAt).toLocaleDateString()
+                      : source.createdAt
+                        ? new Date(source.createdAt).toLocaleDateString()
+                        : '-'}
                   </td>
                   <td>
-                    {source.lastStatus && (
+                    {source.lastStatus ? (
                       <Badge bg={STATUS_COLORS[source.lastStatus]}>
                         {source.lastStatus}
                       </Badge>
+                    ) : (
+                      <Badge bg="secondary">-</Badge>
                     )}
-                  </td>
-                  <td>{source._count?.leads || 0}</td>
-                  <td>
-                    <Badge bg={source.isActive ? 'success' : 'secondary'}>
-                      {source.isActive ? 'Active' : 'Inactive'}
-                    </Badge>
                   </td>
                   <td>
                     <Button
-                      variant="outline-success"
+                      variant="outline-danger"
                       size="sm"
-                      className="me-1"
-                      onClick={() => handleRun(source.id)}
-                      title="Run now"
+                      title="Delete"
+                      onClick={() => handleDelete(source.id, source.name)}
                     >
-                      <FaPlay />
-                    </Button>
-                    <Button variant="outline-primary" size="sm" className="me-1">
-                      <FaEdit />
-                    </Button>
-                    <Button variant="outline-danger" size="sm">
                       <FaTrash />
                     </Button>
                   </td>
@@ -139,6 +170,12 @@ function DataSourceList() {
           </Table>
         )}
       </Card>
+
+      <AddDataSourceModal
+        show={showAddModal}
+        onHide={() => setShowAddModal(false)}
+        onSuccess={fetchSources}
+      />
     </div>
   );
 }
