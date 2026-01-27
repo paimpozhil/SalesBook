@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Modal, Form, Row, Col, Alert } from 'react-bootstrap';
-import { FaPlus, FaEnvelope, FaSms, FaWhatsapp, FaTelegram, FaPhone, FaEdit, FaTrash, FaArrowLeft } from 'react-icons/fa';
+import { FaPlus, FaEnvelope, FaSms, FaWhatsapp, FaTelegram, FaPhone, FaEdit, FaTrash, FaArrowLeft, FaInbox, FaSync, FaQrcode } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import WhatsAppWebConnect from '../../components/channels/WhatsAppWebConnect';
 
 const CHANNEL_TYPES = {
   EMAIL_SMTP: {
@@ -19,6 +20,13 @@ const CHANNEL_TYPES = {
       { name: 'pass', label: 'Password', placeholder: 'App password', type: 'password', required: true },
       { name: 'fromName', label: 'From Name', placeholder: 'SalesBook' },
       { name: 'fromEmail', label: 'From Email', placeholder: 'noreply@example.com', required: true },
+      // IMAP settings for receiving emails
+      { name: '_imapDivider', type: 'divider', label: 'Inbound Email (IMAP)' },
+      { name: 'imapEnabled', label: 'Enable IMAP to receive replies', type: 'checkbox' },
+      { name: 'imapHost', label: 'IMAP Host', placeholder: 'imap.gmail.com' },
+      { name: 'imapPort', label: 'IMAP Port', placeholder: '993', type: 'number' },
+      { name: 'imapUser', label: 'IMAP Username', placeholder: 'Same as SMTP username' },
+      { name: 'imapPass', label: 'IMAP Password', placeholder: 'Same as SMTP password', type: 'password' },
     ],
   },
   EMAIL_API: {
@@ -49,9 +57,8 @@ const CHANNEL_TYPES = {
     icon: FaWhatsapp,
     color: 'success',
     provider: 'whatsapp-web',
-    fields: [
-      { name: 'sessionName', label: 'Session Name', required: true },
-    ],
+    description: 'Connect via QR code scanning - no API keys needed',
+    fields: [], // No credential fields needed - connection handled via QR
   },
   WHATSAPP_BUSINESS: {
     label: 'WhatsApp Business API',
@@ -94,9 +101,15 @@ function ChannelList() {
   const [formData, setFormData] = useState({ name: '', credentials: {} });
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(null);
+  const [pollingImap, setPollingImap] = useState(null);
+  const [testingImap, setTestingImap] = useState(null);
 
   // Edit mode
   const [editingChannel, setEditingChannel] = useState(null);
+
+  // WhatsApp Web connection modal
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [whatsAppChannel, setWhatsAppChannel] = useState(null);
 
   useEffect(() => {
     fetchChannels();
@@ -243,6 +256,30 @@ function ChannelList() {
     }
   };
 
+  const handleTestImap = async (channel) => {
+    setTestingImap(channel.id);
+    try {
+      const response = await api.post(`/channels/${channel.id}/test-imap`);
+      toast.success(response.data.data.message || 'IMAP connection successful!');
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'IMAP test failed');
+    } finally {
+      setTestingImap(null);
+    }
+  };
+
+  const handlePollImap = async (channel) => {
+    setPollingImap(channel.id);
+    try {
+      const response = await api.post(`/channels/${channel.id}/poll-imap`);
+      toast.success(response.data.data.message || 'IMAP polling completed!');
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'IMAP polling failed');
+    } finally {
+      setPollingImap(null);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this channel?')) {
       return;
@@ -266,9 +303,55 @@ function ChannelList() {
     }
   };
 
+  const handleWhatsAppConnect = (channel) => {
+    setWhatsAppChannel(channel);
+    setShowWhatsAppModal(true);
+  };
+
+  const handleWhatsAppModalClose = () => {
+    setShowWhatsAppModal(false);
+    setWhatsAppChannel(null);
+  };
+
   const renderCredentialsForm = () => {
     const config = CHANNEL_TYPES[selectedType];
     if (!config) return null;
+
+    // Special handling for WhatsApp Web - no credentials needed
+    if (selectedType === 'WHATSAPP_WEB') {
+      return (
+        <Form onSubmit={handleSubmit}>
+          <Form.Group className="mb-3">
+            <Form.Label>Channel Name</Form.Label>
+            <Form.Control
+              type="text"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              required
+            />
+          </Form.Group>
+
+          <Alert variant="info">
+            <FaWhatsapp className="me-2" />
+            <strong>No credentials required!</strong>
+            <p className="mb-0 mt-2 small">
+              WhatsApp Web uses QR code authentication. After creating this channel,
+              click the "Connect" button to scan the QR code with your phone.
+            </p>
+          </Alert>
+
+          <div className="d-flex justify-content-between mt-4">
+            <Button variant="outline-secondary" onClick={handleBack}>
+              <FaArrowLeft className="me-2" />
+              {editingChannel ? 'Cancel' : 'Back'}
+            </Button>
+            <Button variant="primary" type="submit" disabled={saving}>
+              {saving ? 'Saving...' : editingChannel ? 'Update Channel' : 'Create Channel'}
+            </Button>
+          </div>
+        </Form>
+      );
+    }
 
     return (
       <Form onSubmit={handleSubmit}>
@@ -291,12 +374,24 @@ function ChannelList() {
           </Alert>
         )}
 
-        {config.fields.map((field) => (
+        {config.fields.map((field) => {
+          // Handle divider type
+          if (field.type === 'divider') {
+            return (
+              <div key={field.name} className="mt-4 mb-3">
+                <hr />
+                <h6 className="text-muted">{field.label}</h6>
+              </div>
+            );
+          }
+
+          return (
           <Form.Group key={field.name} className="mb-3">
-            <Form.Label>{field.label}</Form.Label>
+            {field.type !== 'checkbox' && <Form.Label>{field.label}</Form.Label>}
             {field.type === 'checkbox' ? (
               <Form.Check
                 type="checkbox"
+                label={field.label}
                 checked={formData.credentials[field.name] || false}
                 onChange={(e) => handleFieldChange(field.name, e.target.checked)}
               />
@@ -323,7 +418,8 @@ function ChannelList() {
               />
             )}
           </Form.Group>
-        ))}
+          );
+        })}
 
         <div className="d-flex justify-content-between mt-4">
           <Button variant="outline-secondary" onClick={handleBack}>
@@ -397,15 +493,51 @@ function ChannelList() {
                       </Badge>
                     </td>
                     <td>
-                      <Button
-                        variant="outline-primary"
-                        size="sm"
-                        className="me-1"
-                        onClick={() => handleTest(channel)}
-                        disabled={testing === channel.id}
-                      >
-                        {testing === channel.id ? 'Sending...' : 'Test'}
-                      </Button>
+                      {channel.channelType === 'WHATSAPP_WEB' && (
+                        <Button
+                          variant="outline-success"
+                          size="sm"
+                          className="me-1"
+                          onClick={() => handleWhatsAppConnect(channel)}
+                        >
+                          <FaQrcode className="me-1" /> Connect
+                        </Button>
+                      )}
+                      {channel.channelType !== 'WHATSAPP_WEB' && (
+                        <Button
+                          variant="outline-primary"
+                          size="sm"
+                          className="me-1"
+                          onClick={() => handleTest(channel)}
+                          disabled={testing === channel.id}
+                        >
+                          {testing === channel.id ? 'Sending...' : 'Test'}
+                        </Button>
+                      )}
+                      {channel.channelType === 'EMAIL_SMTP' && (
+                        <>
+                          <Button
+                            variant="outline-info"
+                            size="sm"
+                            className="me-1"
+                            onClick={() => handleTestImap(channel)}
+                            disabled={testingImap === channel.id}
+                            title="Test IMAP Connection"
+                          >
+                            {testingImap === channel.id ? '...' : <FaInbox />}
+                          </Button>
+                          <Button
+                            variant="outline-success"
+                            size="sm"
+                            className="me-1"
+                            onClick={() => handlePollImap(channel)}
+                            disabled={pollingImap === channel.id}
+                            title="Check for New Emails"
+                          >
+                            {pollingImap === channel.id ? '...' : <FaSync />}
+                          </Button>
+                        </>
+                      )}
                       <Button
                         variant="outline-secondary"
                         size="sm"
@@ -477,6 +609,43 @@ function ChannelList() {
             </Button>
           </Modal.Footer>
         )}
+      </Modal>
+
+      {/* WhatsApp Web Connection Modal */}
+      <Modal show={showWhatsAppModal} onHide={handleWhatsAppModalClose} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <FaWhatsapp className="me-2 text-success" />
+            Connect WhatsApp Web - {whatsAppChannel?.name}
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {whatsAppChannel && (
+            <WhatsAppWebConnect
+              channelId={whatsAppChannel.id}
+              onConnected={() => {
+                toast.success('WhatsApp Web connected successfully!');
+              }}
+              onDisconnected={() => {
+                toast.info('WhatsApp Web disconnected');
+              }}
+            />
+          )}
+          <Alert variant="info" className="mt-3">
+            <strong>How it works:</strong>
+            <ul className="mb-0 mt-2">
+              <li>Click "Connect WhatsApp" to open a browser window</li>
+              <li>Scan the QR code with WhatsApp on your phone</li>
+              <li>Once connected, you can send campaigns via WhatsApp Web</li>
+              <li>Messages will be sent with 5-30 second delays to appear natural</li>
+            </ul>
+          </Alert>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleWhatsAppModalClose}>
+            Close
+          </Button>
+        </Modal.Footer>
       </Modal>
     </div>
   );

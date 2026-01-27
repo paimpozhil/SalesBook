@@ -8,7 +8,6 @@ import AuthLayout from './components/layout/AuthLayout';
 
 // Auth pages
 import Login from './pages/auth/Login';
-import Register from './pages/auth/Register';
 
 // Main pages
 import Dashboard from './pages/Dashboard';
@@ -16,6 +15,8 @@ import LeadList from './pages/leads/LeadList';
 import LeadDetail from './pages/leads/LeadDetail';
 import LeadCreate from './pages/leads/LeadCreate';
 import CampaignList from './pages/campaigns/CampaignList';
+import ConversationList from './pages/conversations/ConversationList';
+import ConversationDetail from './pages/conversations/ConversationDetail';
 import TemplateList from './pages/templates/TemplateList';
 import DataSourceList from './pages/data-sources/DataSourceList';
 import ChannelList from './pages/channels/ChannelList';
@@ -76,16 +77,6 @@ function App() {
           </PublicRoute>
         }
       />
-      <Route
-        path="/register"
-        element={
-          <PublicRoute>
-            <AuthLayout>
-              <Register />
-            </AuthLayout>
-          </PublicRoute>
-        }
-      />
 
       {/* Protected routes */}
       <Route
@@ -105,6 +96,10 @@ function App() {
 
         {/* Campaigns */}
         <Route path="campaigns" element={<CampaignList />} />
+
+        {/* Conversations */}
+        <Route path="conversations" element={<ConversationList />} />
+        <Route path="conversations/:id" element={<ConversationDetail />} />
 
         {/* Templates */}
         <Route path="templates" element={<TemplateList />} />

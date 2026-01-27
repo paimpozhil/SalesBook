@@ -36,6 +36,7 @@ model Tenant {
   analyticsDaily AnalyticsDaily[]
   jobQueue       JobQueue[]
   industries     Industry[]
+  positions      Position[]
   notes          Note[]
 
   @@map("tenants")
@@ -158,6 +159,22 @@ model Industry {
   @@map("industries")
 }
 
+model Position {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @map("tenant_id")
+  name      String   @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("positions")
+}
+
 model LeadIndustry {
   id         Int @id @default(autoincrement())
   leadId     Int @map("lead_id")
@@ -191,20 +208,24 @@ enum LeadStatus {
 }
 
 model Contact {
-  id        Int      @id @default(autoincrement())
-  tenantId  Int      @map("tenant_id")
-  leadId    Int      @map("lead_id")
-  name      String?  @db.VarChar(255)
-  email     String?  @db.VarChar(255)
-  phone     String?  @db.VarChar(50)
-  position  String?  @db.VarChar(100)
-  isPrimary Boolean  @default(false) @map("is_primary")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id          Int      @id @default(autoincrement())
+  tenantId    Int      @map("tenant_id")
+  leadId      Int      @map("lead_id")
+  name        String?  @db.VarChar(255)
+  email       String?  @db.VarChar(255)
+  phone       String?  @db.VarChar(50)
+  position    String?  @db.VarChar(100)
+  positionId  Int?     @map("position_id")
+  linkedinUrl String?  @map("linkedin_url") @db.VarChar(500)
+  source      String?  @db.VarChar(100)
+  isPrimary   Boolean  @default(false) @map("is_primary")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Relations
   tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   lead              Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  positionRef       Position?           @relation(fields: [positionId], references: [id], onDelete: SetNull)
   contactAttempts   ContactAttempt[]
   conversations     Conversation[]
   campaignRecipients CampaignRecipient[]
@@ -212,6 +233,7 @@ model Contact {
   @@index([tenantId])
   @@index([leadId])
   @@index([email])
+  @@index([positionId])
   @@map("contacts")
 }
 

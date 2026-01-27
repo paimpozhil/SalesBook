@@ -4,7 +4,7 @@ import { Card, Row, Col, Badge, Button, Tab, Tabs, ListGroup, Modal, Form } from
 import {
   FaArrowLeft, FaEdit, FaTrash, FaEnvelope, FaPhone, FaGlobe, FaBuilding, FaPlus, FaStickyNote,
   FaPaperPlane, FaEnvelopeOpen, FaMousePointer, FaReply, FaComments, FaBullhorn, FaUserPlus, FaHistory,
-  FaWhatsapp
+  FaWhatsapp, FaLinkedin
 } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
@@ -204,11 +204,18 @@ function LeadDetail() {
   const [callForm, setCallForm] = useState({ channelId: '', body: '' });
   const [makingCall, setMakingCall] = useState(false);
 
+  // Edit lead state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm, setEditForm] = useState({ companyName: '', website: '', tags: '', industryIds: [] });
+  const [allIndustries, setAllIndustries] = useState([]);
+  const [savingLead, setSavingLead] = useState(false);
+
   useEffect(() => {
     fetchLead();
     fetchNotes();
     fetchActivity();
     fetchEmailChannels();
+    fetchAllIndustries();
   }, [id]);
 
   const fetchLead = async () => {
@@ -257,6 +264,69 @@ function LeadDetail() {
     } catch (error) {
       console.error('Failed to fetch channels:', error);
     }
+  };
+
+  const fetchAllIndustries = async () => {
+    try {
+      const response = await api.get('/industries');
+      setAllIndustries(response.data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch industries:', error);
+    }
+  };
+
+  const openEditModal = () => {
+    setEditForm({
+      companyName: lead.companyName || '',
+      website: lead.website || '',
+      tags: (lead.tags || []).join(', '),
+      industryIds: lead.industries?.map(li => li.industry.id) || [],
+    });
+    setShowEditModal(true);
+  };
+
+  const closeEditModal = () => {
+    setShowEditModal(false);
+  };
+
+  const handleSaveLead = async (e) => {
+    e.preventDefault();
+    if (!editForm.companyName.trim()) {
+      toast.error('Company name is required');
+      return;
+    }
+
+    setSavingLead(true);
+    try {
+      const tags = editForm.tags
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+
+      await api.patch(`/leads/${id}`, {
+        companyName: editForm.companyName.trim(),
+        website: editForm.website.trim() || null,
+        tags,
+        industryIds: editForm.industryIds,
+      });
+
+      toast.success('Lead updated');
+      closeEditModal();
+      fetchLead();
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'Failed to update lead');
+    } finally {
+      setSavingLead(false);
+    }
+  };
+
+  const handleIndustryToggle = (industryId) => {
+    setEditForm(prev => ({
+      ...prev,
+      industryIds: prev.industryIds.includes(industryId)
+        ? prev.industryIds.filter(id => id !== industryId)
+        : [...prev.industryIds, industryId],
+    }));
   };
 
   const openEmailModal = (contact) => {
@@ -571,6 +641,10 @@ function LeadDetail() {
           </div>
         </div>
         <div className="d-flex gap-2">
+          <Button variant="outline-primary" onClick={openEditModal}>
+            <FaEdit className="me-2" />
+            Edit
+          </Button>
           <Button variant="outline-danger" onClick={handleDelete}>
             <FaTrash className="me-2" />
             Delete
@@ -702,12 +776,23 @@ function LeadDetail() {
                                   </a>
                                 )}
                                 {contact.phone && (
-                                  <a href={`tel:${contact.phone}`}>
+                                  <a href={`tel:${contact.phone}`} className="me-3">
                                     <FaPhone className="me-1" />
                                     {contact.phone}
                                   </a>
                                 )}
+                                {contact.linkedinUrl && (
+                                  <a href={contact.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-primary">
+                                    <FaLinkedin className="me-1" />
+                                    LinkedIn
+                                  </a>
+                                )}
                               </div>
+                              {contact.source && (
+                                <div className="text-muted small mt-1">
+                                  Source: {contact.source}
+                                </div>
+                              )}
                             </div>
                             <div className="d-flex gap-1">
                               {contact.email && (
@@ -1111,6 +1196,92 @@ function LeadDetail() {
               disabled={makingCall}
             >
               {makingCall ? 'Calling...' : 'Call Now'}
+            </Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Edit Lead Modal */}
+      <Modal show={showEditModal} onHide={closeEditModal} size="lg">
+        <Form onSubmit={handleSaveLead}>
+          <Modal.Header closeButton>
+            <Modal.Title>Edit Lead</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <Row>
+              <Col md={6}>
+                <Form.Group className="mb-3">
+                  <Form.Label>Company Name *</Form.Label>
+                  <Form.Control
+                    type="text"
+                    value={editForm.companyName}
+                    onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                    placeholder="Enter company name"
+                    required
+                  />
+                </Form.Group>
+              </Col>
+              <Col md={6}>
+                <Form.Group className="mb-3">
+                  <Form.Label>Website</Form.Label>
+                  <Form.Control
+                    type="url"
+                    value={editForm.website}
+                    onChange={(e) => setEditForm({ ...editForm, website: e.target.value })}
+                    placeholder="https://example.com"
+                  />
+                </Form.Group>
+              </Col>
+            </Row>
+
+            <Form.Group className="mb-3">
+              <Form.Label>Tags</Form.Label>
+              <Form.Control
+                type="text"
+                value={editForm.tags}
+                onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
+                placeholder="Enter tags separated by commas (e.g., hot lead, enterprise, partner)"
+              />
+              <Form.Text className="text-muted">
+                Separate multiple tags with commas
+              </Form.Text>
+            </Form.Group>
+
+            <Form.Group className="mb-3">
+              <Form.Label>Industries</Form.Label>
+              <div className="border rounded p-2" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                {allIndustries.length === 0 ? (
+                  <div className="text-muted small">No industries available. Add industries in Settings.</div>
+                ) : (
+                  allIndustries.map((industry) => (
+                    <Form.Check
+                      key={industry.id}
+                      type="checkbox"
+                      id={`industry-${industry.id}`}
+                      label={industry.name}
+                      checked={editForm.industryIds.includes(industry.id)}
+                      onChange={() => handleIndustryToggle(industry.id)}
+                    />
+                  ))
+                )}
+              </div>
+              {editForm.industryIds.length > 0 && (
+                <div className="mt-2">
+                  <strong className="small">Selected:</strong>{' '}
+                  {editForm.industryIds
+                    .map(id => allIndustries.find(i => i.id === id)?.name)
+                    .filter(Boolean)
+                    .join(', ')}
+                </div>
+              )}
+            </Form.Group>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={closeEditModal}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={savingLead}>
+              {savingLead ? 'Saving...' : 'Save Changes'}
             </Button>
           </Modal.Footer>
         </Form>

@@ -3,7 +3,7 @@ function AuthLayout({ children }) {
     <div className="auth-container">
       <div className="auth-card">
         <div className="auth-logo">
-          <h1>SalesBook</h1>
+          <h1>BlazeHexa Leads</h1>
           <p>Lead Generation & CRM Platform</p>
         </div>
         {children}

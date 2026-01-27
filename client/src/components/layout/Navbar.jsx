@@ -29,7 +29,7 @@ function Navbar({ onToggleSidebar, onToggleMobileSidebar }) {
         </button>
 
         <BSNavbar.Brand as={Link} to="/" className="text-primary">
-          SalesBook
+          BlazeHexa Leads
         </BSNavbar.Brand>
 
         {tenant && (

@@ -67,3 +67,14 @@ server/scripts/*.local.js
 nasscom_companies.json
 nasscom_companies.csv
 error_screenshot.png
+
+# WhatsApp sessions (sensitive auth data)
+.wwebjs_auth/
+.whatsapp_sessions/
+.wwebjs_cache/
+
+# Temporary files
+temp_query.js
+
+# Windows artifacts
+nul

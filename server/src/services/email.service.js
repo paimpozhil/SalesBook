@@ -85,7 +85,7 @@ class EmailService {
     });
 
     const from = credentials.fromEmail
-      ? `${credentials.fromName || 'SalesBook'} <${credentials.fromEmail}>`
+      ? `${credentials.fromName || 'BlazeHexa Leads'} <${credentials.fromEmail}>`
       : emailOptions.from;
 
     const mailOptions = {

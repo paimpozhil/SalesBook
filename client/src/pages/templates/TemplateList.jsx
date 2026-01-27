@@ -7,7 +7,8 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 
 const CHANNEL_TYPES = [
   { value: 'EMAIL_SMTP', label: 'Email', icon: FaEnvelope, color: 'primary' },
-  { value: 'WHATSAPP_BUSINESS', label: 'WhatsApp', icon: FaWhatsapp, color: 'success' },
+  { value: 'WHATSAPP_WEB', label: 'WhatsApp Web', icon: FaWhatsapp, color: 'success' },
+  { value: 'WHATSAPP_BUSINESS', label: 'WhatsApp Business API', icon: FaWhatsapp, color: 'success' },
   { value: 'SMS', label: 'SMS', icon: FaSms, color: 'info' },
   { value: 'VOICE', label: 'Voice', icon: FaPhone, color: 'warning' },
 ];

@@ -37,7 +37,7 @@ module.exports = {
     secure: process.env.SMTP_SECURE === 'true',
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
-    fromName: process.env.SMTP_FROM_NAME || 'SalesBook',
+    fromName: process.env.SMTP_FROM_NAME || 'BlazeHexa Leads',
     fromEmail: process.env.SMTP_FROM_EMAIL,
   },
 

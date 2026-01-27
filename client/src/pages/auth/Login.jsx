@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Form, Button, Alert } from 'react-bootstrap';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import useAuthStore from '../../store/authStore';
@@ -73,18 +73,11 @@ function Login() {
       <Button
         variant="primary"
         type="submit"
-        className="w-100 mb-3"
+        className="w-100"
         disabled={isLoading}
       >
         {isLoading ? 'Signing in...' : 'Sign In'}
       </Button>
-
-      <p className="text-center mb-0">
-        Don't have an account?{' '}
-        <Link to="/register" className="text-primary">
-          Register
-        </Link>
-      </p>
     </Form>
   );
 }

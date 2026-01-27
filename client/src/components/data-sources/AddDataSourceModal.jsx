@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Modal, Form, Button, Table, Alert, Badge, Spinner, Tabs, Tab } from 'react-bootstrap';
+import { Modal, Form, Button, Table, Alert, Badge, Spinner } from 'react-bootstrap';
 import { FaUpload, FaDownload, FaFileAlt, FaTrash } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
@@ -11,13 +11,17 @@ const JSON_FORMAT_EXAMPLE = `[
     "location": "City",
     "companyType": ["IT", "SaaS"],
     "contacts": [
-      { "name": "John Doe", "email": "john@example.com", "phone": "+1234567890", "position": "CEO" }
+      {
+        "name": "John Doe",
+        "email": "john@example.com",
+        "phone": "+1234567890",
+        "position": "CEO",
+        "linkedin_url": "https://linkedin.com/in/johndoe",
+        "source": "Website"
+      }
     ]
   }
 ]`;
-
-const CSV_FORMAT_EXAMPLE = `name,website,location,companyType,contactName,contactEmail,contactPhone,contactPosition
-"Company Name","https://example.com","City","IT;SaaS","John Doe","john@example.com","+1234567890","CEO"`;
 
 function AddDataSourceModal({ show, onHide, onSuccess }) {
   const [step, setStep] = useState(1); // 1: Upload, 2: Preview, 3: Importing
@@ -53,14 +57,13 @@ function AddDataSourceModal({ show, onHide, onSuccess }) {
   const handleFileSelect = (e) => {
     const selectedFile = e.target.files[0];
     if (selectedFile) {
-      // Validate file type
-      const validTypes = ['application/json', 'text/csv', 'text/plain'];
-      const validExtensions = ['.json', '.csv'];
+      // Validate file type - only JSON
+      const validTypes = ['application/json', 'text/plain'];
       const isValidType = validTypes.includes(selectedFile.type) ||
-        validExtensions.some(ext => selectedFile.name.toLowerCase().endsWith(ext));
+        selectedFile.name.toLowerCase().endsWith('.json');
 
       if (!isValidType) {
-        setError('Please select a JSON or CSV file');
+        setError('Please select a JSON file');
         return;
       }
 
@@ -75,7 +78,7 @@ function AddDataSourceModal({ show, onHide, onSuccess }) {
 
       // Auto-set name from filename if empty
       if (!name) {
-        const baseName = selectedFile.name.replace(/\.(json|csv)$/i, '');
+        const baseName = selectedFile.name.replace(/\.json$/i, '');
         setName(baseName);
       }
     }
@@ -206,12 +209,12 @@ function AddDataSourceModal({ show, onHide, onSuccess }) {
             </Form.Group>
 
             <Form.Group className="mb-4">
-              <Form.Label>Upload File (JSON or CSV) *</Form.Label>
+              <Form.Label>Upload JSON File *</Form.Label>
               <div className="border rounded p-4 text-center bg-light">
                 <input
                   type="file"
                   ref={fileInputRef}
-                  accept=".json,.csv"
+                  accept=".json"
                   onChange={handleFileSelect}
                   style={{ display: 'none' }}
                 />
@@ -251,27 +254,12 @@ function AddDataSourceModal({ show, onHide, onSuccess }) {
               </Form.Text>
             </Form.Group>
 
-            <Tabs defaultActiveKey="json" className="mb-3">
-              <Tab eventKey="json" title="JSON Format">
-                <Alert variant="info">
-                  <strong>Expected JSON Format:</strong>
-                  <pre className="mb-0 mt-2" style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
-                    {JSON_FORMAT_EXAMPLE}
-                  </pre>
-                </Alert>
-              </Tab>
-              <Tab eventKey="csv" title="CSV Format">
-                <Alert variant="info">
-                  <strong>Expected CSV Format:</strong>
-                  <pre className="mb-0 mt-2" style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
-                    {CSV_FORMAT_EXAMPLE}
-                  </pre>
-                  <div className="mt-2 small">
-                    Note: Use semicolons (;) to separate multiple industries in companyType
-                  </div>
-                </Alert>
-              </Tab>
-            </Tabs>
+            <Alert variant="info">
+              <strong>Expected JSON Format:</strong>
+              <pre className="mb-0 mt-2" style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+                {JSON_FORMAT_EXAMPLE}
+              </pre>
+            </Alert>
           </>
         )}
 

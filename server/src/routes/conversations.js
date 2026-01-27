@@ -25,6 +25,7 @@ router.get(
   [
     query('status').optional().isIn(['OPEN', 'CLOSED']),
     query('channelType').optional(),
+    query('leadId').optional().isInt().toInt(),
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
     validate,
@@ -37,6 +38,7 @@ router.get(
     const where = addTenantFilter(req, {});
     if (req.query.status) where.status = req.query.status;
     if (req.query.channelType) where.channelType = req.query.channelType;
+    if (req.query.leadId) where.leadId = req.query.leadId;
 
     const [conversations, total] = await Promise.all([
       prisma.conversation.findMany({
@@ -124,6 +126,41 @@ router.get(
 
     // Reverse to show oldest first
     return paginated(res, messages.reverse(), page, limit, total);
+  })
+);
+
+/**
+ * @route   PATCH /api/v1/conversations/:id
+ * @desc    Update conversation status
+ * @access  Private
+ */
+router.patch(
+  '/:id',
+  requirePermission('leads:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const { status } = req.body;
+
+    if (status && !['OPEN', 'CLOSED'].includes(status)) {
+      throw AppError.badRequest('Invalid status. Must be OPEN or CLOSED');
+    }
+
+    const conversation = await prisma.conversation.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!conversation) throw AppError.notFound('Conversation not found');
+
+    const updated = await prisma.conversation.update({
+      where: { id: req.params.id },
+      data: { status },
+      include: {
+        lead: { select: { id: true, companyName: true } },
+        contact: { select: { id: true, name: true, email: true, phone: true } },
+      },
+    });
+
+    return success(res, updated);
   })
 );
 

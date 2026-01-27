@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Card, Row, Col, Form, Button, Tab, Nav } from 'react-bootstrap';
+import { Card, Row, Col, Form, Button, Tab, Nav, Table, Modal, InputGroup } from 'react-bootstrap';
 import { useForm } from 'react-hook-form';
+import { FaPlus, FaEdit, FaTrash, FaSearch } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import useAuthStore from '../../store/authStore';
@@ -12,6 +13,22 @@ function Settings() {
   const [tenant, setTenant] = useState(null);
   const [activeTab, setActiveTab] = useState('profile');
 
+  // Positions state
+  const [positions, setPositions] = useState([]);
+  const [positionsLoading, setPositionsLoading] = useState(false);
+  const [positionSearch, setPositionSearch] = useState('');
+  const [showPositionModal, setShowPositionModal] = useState(false);
+  const [editingPosition, setEditingPosition] = useState(null);
+  const [positionName, setPositionName] = useState('');
+
+  // Industries state
+  const [industries, setIndustries] = useState([]);
+  const [industriesLoading, setIndustriesLoading] = useState(false);
+  const [industrySearch, setIndustrySearch] = useState('');
+  const [showIndustryModal, setShowIndustryModal] = useState(false);
+  const [editingIndustry, setEditingIndustry] = useState(null);
+  const [industryName, setIndustryName] = useState('');
+
   const profileForm = useForm();
   const passwordForm = useForm();
   const tenantForm = useForm();
@@ -19,6 +36,18 @@ function Settings() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'positions') {
+      fetchPositions();
+    }
+  }, [activeTab, positionSearch]);
+
+  useEffect(() => {
+    if (activeTab === 'industries') {
+      fetchIndustries();
+    }
+  }, [activeTab, industrySearch]);
 
   const fetchData = async () => {
     try {
@@ -29,7 +58,7 @@ function Settings() {
       });
 
       // Get tenant settings if admin
-      if (user?.role === 'TENANT_ADMIN') {
+      if (['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role)) {
         const response = await api.get('/auth/me');
         if (response.data.user?.tenant) {
           setTenant(response.data.user.tenant);
@@ -42,6 +71,133 @@ function Settings() {
       console.error('Failed to fetch settings:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPositions = async () => {
+    setPositionsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (positionSearch) params.append('search', positionSearch);
+      params.append('limit', '100');
+      const response = await api.get(`/positions?${params}`);
+      setPositions(response.data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch positions:', error);
+      toast.error('Failed to load positions');
+    } finally {
+      setPositionsLoading(false);
+    }
+  };
+
+  const openPositionModal = (position = null) => {
+    setEditingPosition(position);
+    setPositionName(position?.name || '');
+    setShowPositionModal(true);
+  };
+
+  const closePositionModal = () => {
+    setShowPositionModal(false);
+    setEditingPosition(null);
+    setPositionName('');
+  };
+
+  const savePosition = async () => {
+    if (!positionName.trim()) {
+      toast.error('Position name is required');
+      return;
+    }
+    try {
+      if (editingPosition) {
+        await api.patch(`/positions/${editingPosition.id}`, { name: positionName.trim() });
+        toast.success('Position updated');
+      } else {
+        await api.post('/positions', { name: positionName.trim() });
+        toast.success('Position created');
+      }
+      closePositionModal();
+      fetchPositions();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to save position');
+    }
+  };
+
+  const deletePosition = async (position) => {
+    if (position._count?.contacts > 0) {
+      toast.error(`Cannot delete position with ${position._count.contacts} associated contacts`);
+      return;
+    }
+    if (!window.confirm(`Delete position "${position.name}"?`)) return;
+    try {
+      await api.delete(`/positions/${position.id}`);
+      toast.success('Position deleted');
+      fetchPositions();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to delete position');
+    }
+  };
+
+  // Industries functions
+  const fetchIndustries = async () => {
+    setIndustriesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (industrySearch) params.append('search', industrySearch);
+      params.append('limit', '100');
+      const response = await api.get(`/industries?${params}`);
+      setIndustries(response.data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch industries:', error);
+      toast.error('Failed to load industries');
+    } finally {
+      setIndustriesLoading(false);
+    }
+  };
+
+  const openIndustryModal = (industry = null) => {
+    setEditingIndustry(industry);
+    setIndustryName(industry?.name || '');
+    setShowIndustryModal(true);
+  };
+
+  const closeIndustryModal = () => {
+    setShowIndustryModal(false);
+    setEditingIndustry(null);
+    setIndustryName('');
+  };
+
+  const saveIndustry = async () => {
+    if (!industryName.trim()) {
+      toast.error('Industry name is required');
+      return;
+    }
+    try {
+      if (editingIndustry) {
+        await api.patch(`/industries/${editingIndustry.id}`, { name: industryName.trim() });
+        toast.success('Industry updated');
+      } else {
+        await api.post('/industries', { name: industryName.trim() });
+        toast.success('Industry created');
+      }
+      closeIndustryModal();
+      fetchIndustries();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to save industry');
+    }
+  };
+
+  const deleteIndustry = async (industry) => {
+    if (industry._count?.leads > 0) {
+      toast.error(`Cannot delete industry with ${industry._count.leads} associated leads`);
+      return;
+    }
+    if (!window.confirm(`Delete industry "${industry.name}"?`)) return;
+    try {
+      await api.delete(`/industries/${industry.id}`);
+      toast.success('Industry deleted');
+      fetchIndustries();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to delete industry');
     }
   };
 
@@ -103,11 +259,17 @@ function Settings() {
                   <Nav.Item>
                     <Nav.Link eventKey="password">Password</Nav.Link>
                   </Nav.Item>
-                  {user?.role === 'TENANT_ADMIN' && (
+                  {['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role) && (
                     <Nav.Item>
                       <Nav.Link eventKey="organization">Organization</Nav.Link>
                     </Nav.Item>
                   )}
+                  <Nav.Item>
+                    <Nav.Link eventKey="positions">Positions</Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="industries">Industries</Nav.Link>
+                  </Nav.Item>
                   <Nav.Item>
                     <Nav.Link eventKey="notifications">Notifications</Nav.Link>
                   </Nav.Item>
@@ -201,7 +363,7 @@ function Settings() {
               </Tab.Pane>
 
               {/* Organization Tab */}
-              {user?.role === 'TENANT_ADMIN' && (
+              {['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role) && (
                 <Tab.Pane eventKey="organization">
                   <Card>
                     <Card.Header>
@@ -224,6 +386,138 @@ function Settings() {
                   </Card>
                 </Tab.Pane>
               )}
+
+              {/* Positions Tab */}
+              <Tab.Pane eventKey="positions">
+                <Card>
+                  <Card.Header className="d-flex justify-content-between align-items-center">
+                    <h5 className="mb-0">Manage Positions</h5>
+                    <Button variant="primary" size="sm" onClick={() => openPositionModal()}>
+                      <FaPlus className="me-1" /> Add Position
+                    </Button>
+                  </Card.Header>
+                  <Card.Body>
+                    <InputGroup className="mb-3" style={{ maxWidth: '300px' }}>
+                      <InputGroup.Text><FaSearch /></InputGroup.Text>
+                      <Form.Control
+                        type="text"
+                        placeholder="Search positions..."
+                        value={positionSearch}
+                        onChange={(e) => setPositionSearch(e.target.value)}
+                      />
+                    </InputGroup>
+                    {positionsLoading ? (
+                      <div className="text-center py-4">Loading...</div>
+                    ) : positions.length === 0 ? (
+                      <div className="text-center py-4 text-muted">
+                        No positions found. Add your first position to get started.
+                      </div>
+                    ) : (
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Position Name</th>
+                            <th style={{ width: '120px' }}>Contacts</th>
+                            <th style={{ width: '120px' }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {positions.map((position) => (
+                            <tr key={position.id}>
+                              <td>{position.name}</td>
+                              <td>{position._count?.contacts || 0}</td>
+                              <td>
+                                <Button
+                                  variant="outline-primary"
+                                  size="sm"
+                                  className="me-1"
+                                  onClick={() => openPositionModal(position)}
+                                >
+                                  <FaEdit />
+                                </Button>
+                                <Button
+                                  variant="outline-danger"
+                                  size="sm"
+                                  onClick={() => deletePosition(position)}
+                                  disabled={position._count?.contacts > 0}
+                                >
+                                  <FaTrash />
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    )}
+                  </Card.Body>
+                </Card>
+              </Tab.Pane>
+
+              {/* Industries Tab */}
+              <Tab.Pane eventKey="industries">
+                <Card>
+                  <Card.Header className="d-flex justify-content-between align-items-center">
+                    <h5 className="mb-0">Manage Industries</h5>
+                    <Button variant="primary" size="sm" onClick={() => openIndustryModal()}>
+                      <FaPlus className="me-1" /> Add Industry
+                    </Button>
+                  </Card.Header>
+                  <Card.Body>
+                    <InputGroup className="mb-3" style={{ maxWidth: '300px' }}>
+                      <InputGroup.Text><FaSearch /></InputGroup.Text>
+                      <Form.Control
+                        type="text"
+                        placeholder="Search industries..."
+                        value={industrySearch}
+                        onChange={(e) => setIndustrySearch(e.target.value)}
+                      />
+                    </InputGroup>
+                    {industriesLoading ? (
+                      <div className="text-center py-4">Loading...</div>
+                    ) : industries.length === 0 ? (
+                      <div className="text-center py-4 text-muted">
+                        No industries found. Industries are auto-created when importing data sources.
+                      </div>
+                    ) : (
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Industry Name</th>
+                            <th style={{ width: '120px' }}>Leads</th>
+                            <th style={{ width: '120px' }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {industries.map((industry) => (
+                            <tr key={industry.id}>
+                              <td>{industry.name}</td>
+                              <td>{industry._count?.leads || 0}</td>
+                              <td>
+                                <Button
+                                  variant="outline-primary"
+                                  size="sm"
+                                  className="me-1"
+                                  onClick={() => openIndustryModal(industry)}
+                                >
+                                  <FaEdit />
+                                </Button>
+                                <Button
+                                  variant="outline-danger"
+                                  size="sm"
+                                  onClick={() => deleteIndustry(industry)}
+                                  disabled={industry._count?.leads > 0}
+                                >
+                                  <FaTrash />
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    )}
+                  </Card.Body>
+                </Card>
+              </Tab.Pane>
 
               {/* Notifications Tab */}
               <Tab.Pane eventKey="notifications">
@@ -271,6 +565,60 @@ function Settings() {
           </Col>
         </Row>
       </Tab.Container>
+
+      {/* Position Modal */}
+      <Modal show={showPositionModal} onHide={closePositionModal}>
+        <Modal.Header closeButton>
+          <Modal.Title>{editingPosition ? 'Edit Position' : 'Add Position'}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group>
+            <Form.Label>Position Name</Form.Label>
+            <Form.Control
+              type="text"
+              placeholder="Enter position name (e.g., CEO, Manager, Developer)"
+              value={positionName}
+              onChange={(e) => setPositionName(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && savePosition()}
+            />
+          </Form.Group>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={closePositionModal}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={savePosition}>
+            {editingPosition ? 'Update' : 'Create'}
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* Industry Modal */}
+      <Modal show={showIndustryModal} onHide={closeIndustryModal}>
+        <Modal.Header closeButton>
+          <Modal.Title>{editingIndustry ? 'Edit Industry' : 'Add Industry'}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group>
+            <Form.Label>Industry Name</Form.Label>
+            <Form.Control
+              type="text"
+              placeholder="Enter industry name (e.g., IT, SaaS, Healthcare)"
+              value={industryName}
+              onChange={(e) => setIndustryName(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && saveIndustry()}
+            />
+          </Form.Group>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={closeIndustryModal}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={saveIndustry}>
+            {editingIndustry ? 'Update' : 'Create'}
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 }

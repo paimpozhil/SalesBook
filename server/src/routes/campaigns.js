@@ -8,6 +8,7 @@ const { asyncHandler } = require('../middleware/errorHandler');
 const prisma = require('../config/database');
 const AppError = require('../utils/AppError');
 const { success, paginated, noContent, created } = require('../utils/response');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -23,7 +24,7 @@ router.get(
   '/',
   requirePermission('campaigns:read'),
   [
-    query('status').optional().isIn(['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED']),
+    query('status').optional(), // Accepts single or comma-separated statuses
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
     validate,
@@ -34,7 +35,17 @@ router.get(
     const skip = (page - 1) * limit;
 
     const where = addTenantFilter(req, {});
-    if (req.query.status) where.status = req.query.status;
+    if (req.query.status) {
+      // Support comma-separated statuses (e.g., "DRAFT,ACTIVE,PAUSED")
+      const statuses = req.query.status.split(',').map(s => s.trim());
+      const validStatuses = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED'];
+      const filteredStatuses = statuses.filter(s => validStatuses.includes(s));
+      if (filteredStatuses.length === 1) {
+        where.status = filteredStatuses[0];
+      } else if (filteredStatuses.length > 1) {
+        where.status = { in: filteredStatuses };
+      }
+    }
 
     const [campaigns, total] = await Promise.all([
       prisma.campaign.findMany({
@@ -564,10 +575,38 @@ router.post(
       },
     });
 
+    // Auto-trigger: Queue jobs for all pending recipients
+    const pendingRecipients = await prisma.campaignRecipient.findMany({
+      where: {
+        campaignId: campaign.id,
+        status: 'PENDING',
+      },
+      select: { id: true },
+    });
+
+    if (pendingRecipients.length > 0) {
+      const queueService = require('../services/queue.service');
+
+      // Queue jobs for all recipients
+      for (const recipient of pendingRecipients) {
+        await queueService.addJob('CAMPAIGN_STEP', {
+          recipientId: recipient.id,
+          campaignId: campaign.id,
+        }, {
+          tenantId: campaign.tenantId,
+          priority: 0,
+          scheduledAt: nextActionAt, // Respect scheduled time if set
+        });
+      }
+
+      logger.info(`Auto-triggered ${pendingRecipients.length} recipients for campaign ${campaign.id}`);
+    }
+
     return success(res, {
-      message: `Campaign started with ${campaign._count.recipients} recipients`,
+      message: `Campaign started with ${campaign._count.recipients} recipients. Messages will be sent automatically.`,
       campaign: updated,
       recipientCount: campaign._count.recipients,
+      autoTriggered: pendingRecipients.length,
     });
   })
 );
@@ -728,6 +767,163 @@ router.get(
         acc[s.status] = s._count;
         return acc;
       }, {}),
+    });
+  })
+);
+
+/**
+ * @route   POST /api/v1/campaigns/:id/trigger
+ * @desc    Manually trigger campaign processing (sends pending messages now)
+ * @access  Private
+ */
+router.post(
+  '/:id/trigger',
+  requirePermission('campaigns:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const campaign = await prisma.campaign.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+      include: {
+        steps: {
+          include: {
+            template: true,
+            channelConfig: true,
+          },
+          orderBy: { stepOrder: 'asc' },
+        },
+      },
+    });
+
+    if (!campaign) throw AppError.notFound('Campaign not found');
+
+    if (campaign.status !== 'ACTIVE') {
+      throw AppError.badRequest('Campaign must be ACTIVE to trigger. Start the campaign first.');
+    }
+
+    // Get pending recipients
+    const pendingRecipients = await prisma.campaignRecipient.findMany({
+      where: {
+        campaignId: campaign.id,
+        status: { in: ['PENDING', 'IN_PROGRESS'] },
+      },
+      include: {
+        lead: true,
+        contact: true,
+      },
+      take: 50, // Process max 50 at a time
+    });
+
+    if (pendingRecipients.length === 0) {
+      return success(res, {
+        message: 'No pending recipients to process',
+        processed: 0,
+      });
+    }
+
+    // Import queue service to add jobs
+    const queueService = require('../services/queue.service');
+
+    // Queue jobs for each recipient
+    for (const recipient of pendingRecipients) {
+      await queueService.addJob('CAMPAIGN_STEP', {
+        recipientId: recipient.id,
+        campaignId: campaign.id,
+      }, {
+        tenantId: campaign.tenantId,
+        priority: 1, // High priority for manual trigger
+      });
+    }
+
+    return success(res, {
+      message: `Triggered ${pendingRecipients.length} recipients for processing`,
+      processed: pendingRecipients.length,
+      note: 'Messages will be sent with 5-30 second delays for WhatsApp Web',
+    });
+  })
+);
+
+/**
+ * @route   GET /api/v1/campaigns/:id/progress
+ * @desc    Get real-time campaign progress
+ * @access  Private
+ */
+router.get(
+  '/:id/progress',
+  requirePermission('campaigns:read'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const campaign = await prisma.campaign.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        startedAt: true,
+        completedAt: true,
+      },
+    });
+
+    if (!campaign) throw AppError.notFound('Campaign not found');
+
+    // Get recipient counts by status
+    const recipientCounts = await prisma.campaignRecipient.groupBy({
+      by: ['status'],
+      where: { campaignId: campaign.id },
+      _count: true,
+    });
+
+    const counts = {
+      pending: 0,
+      in_progress: 0,
+      completed: 0,
+      failed: 0,
+      total: 0,
+    };
+
+    recipientCounts.forEach((r) => {
+      const status = r.status.toLowerCase();
+      counts[status] = r._count;
+      counts.total += r._count;
+    });
+
+    // Get recent contact attempts (last 10)
+    const recentAttempts = await prisma.contactAttempt.findMany({
+      where: { campaignId: campaign.id },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: {
+        contact: { select: { name: true, phone: true, email: true } },
+        lead: { select: { companyName: true } },
+      },
+    });
+
+    // Calculate progress percentage
+    const progressPercent = counts.total > 0
+      ? Math.round(((counts.completed + counts.failed) / counts.total) * 100)
+      : 0;
+
+    return success(res, {
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        status: campaign.status,
+        startedAt: campaign.startedAt,
+        completedAt: campaign.completedAt,
+      },
+      progress: {
+        percent: progressPercent,
+        ...counts,
+      },
+      recentAttempts: recentAttempts.map((a) => ({
+        id: a.id,
+        status: a.status,
+        contactName: a.contact?.name || 'Unknown',
+        contactPhone: a.contact?.phone,
+        companyName: a.lead?.companyName,
+        sentAt: a.sentAt,
+        createdAt: a.createdAt,
+        error: a.metadata?.error,
+      })),
     });
   })
 );

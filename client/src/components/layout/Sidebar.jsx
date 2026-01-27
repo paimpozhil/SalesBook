@@ -3,6 +3,7 @@ import {
   FaHome,
   FaUsers,
   FaBullhorn,
+  FaComments,
   FaFileAlt,
   FaDatabase,
   FaPlug,
@@ -20,6 +21,7 @@ const navItems = [
       { path: '/', icon: FaHome, label: 'Dashboard' },
       { path: '/leads', icon: FaUsers, label: 'Leads' },
       { path: '/campaigns', icon: FaBullhorn, label: 'Campaigns' },
+      { path: '/conversations', icon: FaComments, label: 'Conversations' },
     ],
   },
   {

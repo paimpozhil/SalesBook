@@ -5,6 +5,8 @@ const queueService = require('../services/queue.service');
 const scraperService = require('../services/scraper.service');
 const emailService = require('../services/email.service');
 const templateService = require('../services/template.service');
+const imapPollerService = require('../services/imapPoller.service');
+const whatsappWebService = require('../services/whatsappWeb.service');
 const { decrypt } = require('../utils/encryption');
 const logger = require('../utils/logger');
 
@@ -37,6 +39,15 @@ function initializeCronJobs() {
   // Process campaign steps every 5 minutes
   cron.schedule('*/5 * * * *', async () => {
     await scheduleCampaignSteps();
+  });
+
+  // Poll IMAP for inbound emails every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      await imapPollerService.pollAll();
+    } catch (error) {
+      logger.error('IMAP polling cron error:', error.message);
+    }
   });
 
   // Daily cleanup at 3 AM
@@ -393,6 +404,14 @@ async function handleCampaignStepJob(payload) {
       case 'VOICE':
         sendResult = await sendVoiceCall(credentials, recipient.contact, renderedBody);
         break;
+      case 'WHATSAPP_WEB':
+        sendResult = await sendWhatsAppWeb(
+          recipient.campaign.tenantId,
+          currentStep.channelConfigId,
+          recipient.contact,
+          renderedBody
+        );
+        break;
       default:
         logger.warn(`Channel type ${currentStep.channelType} not implemented for campaigns`);
         sendResult = { success: false, error: `Channel type ${currentStep.channelType} not supported` };
@@ -417,6 +436,59 @@ async function handleCampaignStepJob(payload) {
     renderedBody,
     renderedSubject
   );
+
+  // Create/update conversation for email channels
+  if (sendResult.success && ['EMAIL_SMTP', 'EMAIL_API'].includes(currentStep.channelType)) {
+    try {
+      let conversation = await prisma.conversation.findFirst({
+        where: {
+          tenantId: recipient.campaign.tenantId,
+          leadId: recipient.leadId,
+          contactId: recipient.contactId,
+          channelType: currentStep.channelType,
+        },
+      });
+
+      if (!conversation) {
+        conversation = await prisma.conversation.create({
+          data: {
+            tenantId: recipient.campaign.tenantId,
+            leadId: recipient.leadId,
+            contactId: recipient.contactId,
+            channelType: currentStep.channelType,
+            status: 'OPEN',
+            lastMessageAt: new Date(),
+          },
+        });
+      }
+
+      // Add message to conversation
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          direction: 'OUTBOUND',
+          content: renderedBody,
+          metadata: {
+            subject: renderedSubject,
+            messageId: sendResult.messageId,
+            campaignId,
+            stepId: currentStep.id,
+            sentAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      // Update conversation lastMessageAt
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { lastMessageAt: new Date() },
+      });
+
+      logger.info('Campaign email added to conversation', { conversationId: conversation.id, recipientId });
+    } catch (convError) {
+      logger.error('Failed to create conversation for campaign email', { error: convError.message, recipientId });
+    }
+  }
 
   // Update recipient to next step (even if this step failed, move forward)
   const nextStep = recipient.campaign.steps.find(
@@ -606,6 +678,45 @@ async function sendVoiceCall(credentials, contact, message) {
 
   logger.info('Campaign voice call initiated', { to: phoneNumber, callSid: result.sid });
   return { success: true, messageId: result.sid };
+}
+
+/**
+ * Send WhatsApp message via WhatsApp Web
+ * Includes random delay (5-30 seconds) to appear human-like
+ * Note: sendMessage now handles auto-reconnection if session is saved
+ */
+async function sendWhatsAppWeb(tenantId, channelId, contact, body) {
+  if (!contact.phone) {
+    return { success: false, error: 'Contact has no phone number' };
+  }
+
+  // Random delay between 5-30 seconds to appear human-like
+  const delay = Math.floor(Math.random() * 25000) + 5000;
+  logger.info(`WhatsApp Web: waiting ${delay}ms before sending`, { to: contact.phone });
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  // sendMessage will auto-reconnect if session exists
+  const result = await whatsappWebService.sendMessage(
+    tenantId,
+    channelId,
+    contact.phone,
+    body
+  );
+
+  if (result.success) {
+    logger.info('Campaign WhatsApp Web message sent', {
+      to: contact.phone,
+      messageId: result.messageId,
+      delay: delay,
+    });
+  } else {
+    logger.error('Campaign WhatsApp Web send failed', {
+      to: contact.phone,
+      error: result.error,
+    });
+  }
+
+  return result;
 }
 
 /**

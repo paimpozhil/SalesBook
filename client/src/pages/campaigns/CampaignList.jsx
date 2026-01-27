@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Modal, Form, Row, Col, ListGroup, Alert, ProgressBar, InputGroup } from 'react-bootstrap';
-import { FaPlus, FaBullhorn, FaPlay, FaPause, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaUsers, FaUserPlus, FaClock, FaRocket, FaListOl, FaEye, FaSync, FaCheckCircle, FaTimesCircle, FaSpinner, FaFilter, FaSearch } from 'react-icons/fa';
+import { FaPlus, FaBullhorn, FaPlay, FaPause, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaUsers, FaUserPlus, FaClock, FaRocket, FaListOl, FaEye, FaSync, FaCheckCircle, FaTimesCircle, FaSpinner, FaFilter, FaSearch, FaBolt } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -109,15 +109,40 @@ function CampaignList() {
   const [campaignRecipients, setCampaignRecipients] = useState([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
+  // Trigger state
+  const [triggering, setTriggering] = useState(null); // campaignId being triggered
+
+  // Pagination and filter state
+  const [page, setPage] = useState(1);
+  const [limit] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [statusFilter, setStatusFilter] = useState(''); // Empty means all except COMPLETED
+  const [searchTerm, setSearchTerm] = useState('');
+
   useEffect(() => {
     fetchCampaigns();
     fetchChannelsAndTemplates();
-  }, []);
+  }, [page, statusFilter]);
 
   const fetchCampaigns = async () => {
     try {
-      const response = await api.get('/campaigns');
+      const params = new URLSearchParams();
+      params.append('page', page);
+      params.append('limit', limit);
+      // By default show all except COMPLETED, or filter by specific status
+      if (statusFilter === 'ALL') {
+        // Show all campaigns including completed - don't add status filter
+      } else if (statusFilter) {
+        params.append('status', statusFilter);
+      } else {
+        // Default: Show DRAFT, ACTIVE, PAUSED (exclude COMPLETED)
+        params.append('status', 'DRAFT,ACTIVE,PAUSED');
+      }
+
+      const response = await api.get(`/campaigns?${params.toString()}`);
       setCampaigns(response.data.data);
+      // Pagination is under meta.pagination in the response
+      setTotal(response.data.meta?.pagination?.total || response.data.data.length);
     } catch (error) {
       console.error('Failed to fetch campaigns:', error);
     } finally {
@@ -152,7 +177,7 @@ function CampaignList() {
 
       const response = await api.get(`/leads?${params.toString()}`);
       setLeads(response.data.data);
-      setFilteredLeadsCount(response.data.pagination?.total || response.data.data.length);
+      setFilteredLeadsCount(response.data.meta?.pagination?.total || response.data.data.length);
     } catch (error) {
       console.error('Failed to fetch leads:', error);
     } finally {
@@ -499,6 +524,25 @@ function CampaignList() {
     }
   };
 
+  // Trigger campaign processing immediately
+  const handleTrigger = async (id) => {
+    setTriggering(id);
+    try {
+      const response = await api.post(`/campaigns/${id}/trigger`);
+      const { processed, message } = response.data.data;
+      toast.success(message);
+      fetchCampaigns();
+      // If detail modal is open, refresh it
+      if (showDetailModal && campaignDetail?.id === id) {
+        refreshCampaignDetail();
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'Failed to trigger campaign');
+    } finally {
+      setTriggering(null);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this campaign?')) return;
 
@@ -597,6 +641,46 @@ function CampaignList() {
         </Button>
       </div>
 
+      {/* Filters */}
+      <Card className="mb-3">
+        <Card.Body className="py-2">
+          <Row className="align-items-center">
+            <Col md={4}>
+              <InputGroup size="sm">
+                <InputGroup.Text><FaSearch /></InputGroup.Text>
+                <Form.Control
+                  placeholder="Search campaigns..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </InputGroup>
+            </Col>
+            <Col md={3}>
+              <Form.Select
+                size="sm"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">All (except Completed)</option>
+                <option value="DRAFT">Draft</option>
+                <option value="ACTIVE">Active</option>
+                <option value="PAUSED">Paused</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="ALL">All (including Completed)</option>
+              </Form.Select>
+            </Col>
+            <Col md={5} className="text-end">
+              <small className="text-muted">
+                Showing {campaigns.length} of {total} campaigns
+              </small>
+            </Col>
+          </Row>
+        </Card.Body>
+      </Card>
+
       <Card>
         {campaigns.length === 0 ? (
           <Card.Body className="text-center py-5">
@@ -618,7 +702,12 @@ function CampaignList() {
               </tr>
             </thead>
             <tbody>
-              {campaigns.map((campaign) => (
+              {campaigns
+                .filter(campaign =>
+                  !searchTerm ||
+                  campaign.name.toLowerCase().includes(searchTerm.toLowerCase())
+                )
+                .map((campaign) => (
                 <tr key={campaign.id}>
                   <td>
                     <strong>{campaign.name}</strong>
@@ -709,14 +798,30 @@ function CampaignList() {
                       </>
                     )}
                     {campaign.status === 'ACTIVE' && (
-                      <Button
-                        variant="outline-warning"
-                        size="sm"
-                        onClick={() => handlePause(campaign.id)}
-                        title="Pause Campaign"
-                      >
-                        <FaPause />
-                      </Button>
+                      <>
+                        <Button
+                          variant="outline-primary"
+                          size="sm"
+                          className="me-1"
+                          onClick={() => handleTrigger(campaign.id)}
+                          disabled={triggering === campaign.id}
+                          title="Trigger Now - Process pending messages immediately"
+                        >
+                          {triggering === campaign.id ? (
+                            <FaSpinner className="fa-spin" />
+                          ) : (
+                            <FaBolt />
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline-warning"
+                          size="sm"
+                          onClick={() => handlePause(campaign.id)}
+                          title="Pause Campaign"
+                        >
+                          <FaPause />
+                        </Button>
+                      </>
                     )}
                     {campaign.status === 'PAUSED' && (
                       <Button
@@ -733,6 +838,34 @@ function CampaignList() {
               ))}
             </tbody>
           </Table>
+        )}
+
+        {/* Pagination */}
+        {total > limit && (
+          <Card.Footer className="d-flex justify-content-between align-items-center">
+            <div>
+              Page {page} of {Math.ceil(total / limit)}
+            </div>
+            <div>
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                className="me-2"
+                disabled={page <= 1}
+                onClick={() => setPage(page - 1)}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                disabled={page >= Math.ceil(total / limit)}
+                onClick={() => setPage(page + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </Card.Footer>
         )}
       </Card>
 
@@ -1469,14 +1602,31 @@ function CampaignList() {
                         </Badge>
                       </div>
                     </div>
-                    <Button
-                      variant="outline-secondary"
-                      size="sm"
-                      onClick={refreshCampaignDetail}
-                      disabled={loadingDetail}
-                    >
-                      <FaSync className={loadingDetail ? 'fa-spin' : ''} /> Refresh
-                    </Button>
+                    <div className="d-flex gap-2">
+                      {campaignDetail.status === 'ACTIVE' && (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => handleTrigger(campaignDetail.id)}
+                          disabled={triggering === campaignDetail.id}
+                          title="Process pending messages immediately"
+                        >
+                          {triggering === campaignDetail.id ? (
+                            <><FaSpinner className="fa-spin me-1" /> Triggering...</>
+                          ) : (
+                            <><FaBolt className="me-1" /> Trigger Now</>
+                          )}
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline-secondary"
+                        size="sm"
+                        onClick={refreshCampaignDetail}
+                        disabled={loadingDetail}
+                      >
+                        <FaSync className={loadingDetail ? 'fa-spin' : ''} /> Refresh
+                      </Button>
+                    </div>
                   </div>
 
                   <Row className="mt-3">

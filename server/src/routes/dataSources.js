@@ -19,11 +19,11 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
   fileFilter: (req, file, cb) => {
-    const allowedMimes = ['application/json', 'text/csv', 'text/plain'];
-    if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.(json|csv)$/i)) {
+    const allowedMimes = ['application/json', 'text/plain'];
+    if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.json$/i)) {
       cb(null, true);
     } else {
-      cb(new AppError('Only JSON and CSV files are allowed', 400), false);
+      cb(new AppError('Only JSON files are allowed', 400), false);
     }
   },
 });
@@ -428,7 +428,7 @@ router.post(
 
 /**
  * @route   POST /api/v1/data-sources/upload
- * @desc    Upload and parse JSON/CSV file for preview
+ * @desc    Upload and parse JSON file for preview
  * @access  Private
  */
 router.post(
@@ -443,20 +443,14 @@ router.post(
     const { originalname, size, buffer } = req.file;
     const fileContent = buffer.toString('utf8');
     let records = [];
-    let fileType = 'JSON';
 
     try {
-      if (originalname.toLowerCase().endsWith('.csv')) {
-        fileType = 'CSV';
-        records = parseCSV(fileContent);
-      } else {
-        records = JSON.parse(fileContent);
-        if (!Array.isArray(records)) {
-          throw new Error('JSON must be an array of objects');
-        }
+      records = JSON.parse(fileContent);
+      if (!Array.isArray(records)) {
+        throw new Error('JSON must be an array of objects');
       }
     } catch (err) {
-      throw AppError.badRequest(`Failed to parse file: ${err.message}`);
+      throw AppError.badRequest(`Failed to parse JSON file: ${err.message}`);
     }
 
     if (records.length > MAX_LEADS_PER_UPLOAD) {
@@ -470,7 +464,7 @@ router.post(
     return success(res, {
       fileName: originalname,
       fileSize: size,
-      fileType,
+      fileType: 'JSON',
       totalRecords: records.length,
       preview: leads.slice(0, 100),
       leads, // All leads for import
@@ -490,7 +484,7 @@ router.post(
     body('name').trim().isLength({ min: 1, max: 255 }),
     body('fileName').trim().isLength({ min: 1, max: 255 }),
     body('fileSize').isInt({ min: 1 }),
-    body('fileType').isIn(['JSON', 'CSV']),
+    body('fileType').isIn(['JSON']),
     body('leads').isArray({ min: 1, max: MAX_LEADS_PER_UPLOAD }),
     validate,
   ],
@@ -579,22 +573,58 @@ router.post(
 
         // Create contacts
         if (leadData.contacts && Array.isArray(leadData.contacts)) {
-          for (let i = 0; i < leadData.contacts.length; i++) {
-            const contact = leadData.contacts[i];
-            // Only create contact if it has at least email or phone
-            if (contact.email || contact.phone) {
-              await prisma.contact.create({
-                data: {
-                  tenantId,
-                  leadId: lead.id,
-                  name: contact.name || null,
-                  email: contact.email || null,
-                  phone: contact.phone || null,
-                  position: contact.position || null,
-                  isPrimary: i === 0,
-                },
-              });
+          // Filter valid contacts (must have email or phone)
+          const validContacts = leadData.contacts.filter(c => c.email || c.phone);
+
+          // Find the best contact to be primary (prioritize: name + email + position)
+          let primaryIndex = 0;
+          if (validContacts.length > 1) {
+            let bestScore = -1;
+            validContacts.forEach((contact, idx) => {
+              let score = 0;
+              if (contact.name) score += 3;      // Name is important
+              if (contact.email) score += 2;     // Email is important
+              if (contact.position) score += 1;  // Position adds value
+              if (score > bestScore) {
+                bestScore = score;
+                primaryIndex = idx;
+              }
+            });
+          }
+
+          for (let i = 0; i < validContacts.length; i++) {
+            const contact = validContacts[i];
+            // Find or create position if provided
+            let positionId = null;
+            if (contact.position) {
+              const positionName = contact.position.trim();
+              if (positionName) {
+                let positionRecord = await prisma.position.findFirst({
+                  where: { tenantId, name: positionName },
+                });
+                if (!positionRecord) {
+                  positionRecord = await prisma.position.create({
+                    data: { tenantId, name: positionName },
+                  });
+                }
+                positionId = positionRecord.id;
+              }
             }
+
+            await prisma.contact.create({
+              data: {
+                tenantId,
+                leadId: lead.id,
+                name: contact.name || null,
+                email: contact.email || null,
+                phone: contact.phone || null,
+                position: contact.position || null,
+                positionId: positionId,
+                linkedinUrl: contact.linkedin_url || contact.linkedinUrl || null,
+                source: contact.source || null,
+                isPrimary: i === primaryIndex,
+              },
+            });
           }
         }
 
@@ -627,90 +657,29 @@ router.post(
 );
 
 /**
- * Parse CSV content to array of objects
- */
-function parseCSV(content) {
-  const lines = content.split('\n').filter(line => line.trim());
-  if (lines.length < 2) {
-    throw new Error('CSV must have header row and at least one data row');
-  }
-
-  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-  const records = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
-    const record = {};
-    headers.forEach((header, index) => {
-      record[header] = values[index] || '';
-    });
-    records.push(record);
-  }
-
-  return records;
-}
-
-/**
- * Parse a single CSV line handling quoted values
- */
-function parseCSVLine(line) {
-  const values = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      values.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  values.push(current.trim());
-
-  return values;
-}
-
-/**
- * Transform a record from uploaded file to standard lead format
+ * Transform a record from uploaded JSON file to standard lead format
  */
 function transformRecord(record, index) {
-  // Handle both JSON format and CSV format
   const lead = {
     _index: index,
-    companyName: record.name || record.companyName || record.company_name || record.company || '',
-    website: record.website || record.url || record.site || '',
-    location: record.location || record.city || '',
+    companyName: record.name || record.companyName || '',
+    website: record.website || '',
+    location: record.location || '',
     companyType: [],
     contacts: [],
-    isMarketplace: record.isMarketplace === true || record.isMarketplace === 'true',
-    marketplaceName: record.marketplaceName || record.marketplace_name || null,
-    websiteStatus: record.websiteStatus || record.website_status || null,
+    isMarketplace: record.isMarketplace === true,
+    marketplaceName: record.marketplaceName || null,
+    websiteStatus: record.websiteStatus || null,
   };
 
-  // Handle companyType - can be array or semicolon-separated string
-  if (record.companyType) {
-    if (Array.isArray(record.companyType)) {
-      lead.companyType = record.companyType.filter(t => t && t !== 'Unknown');
-    } else if (typeof record.companyType === 'string') {
-      lead.companyType = record.companyType.split(';').map(t => t.trim()).filter(t => t && t !== 'Unknown');
-    }
+  // Handle companyType - array of strings
+  if (record.companyType && Array.isArray(record.companyType)) {
+    lead.companyType = record.companyType.filter(t => t && t !== 'Unknown');
   }
 
-  // Handle contacts - can be array or single contact from CSV
+  // Handle contacts array
   if (record.contacts && Array.isArray(record.contacts)) {
     lead.contacts = record.contacts.filter(c => c.email || c.phone);
-  } else if (record.contactEmail || record.contactPhone || record.contact_email || record.contact_phone) {
-    // CSV format with flat contact fields
-    lead.contacts = [{
-      name: record.contactName || record.contact_name || '',
-      email: record.contactEmail || record.contact_email || '',
-      phone: record.contactPhone || record.contact_phone || '',
-      position: record.contactPosition || record.contact_position || '',
-    }];
   }
 
   return lead;

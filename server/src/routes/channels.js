@@ -11,6 +11,8 @@ const { encrypt, decrypt } = require('../utils/encryption');
 const AppError = require('../utils/AppError');
 const { success, paginated, noContent, created } = require('../utils/response');
 const logger = require('../utils/logger');
+const imapPollerService = require('../services/imapPoller.service');
+const whatsappWebService = require('../services/whatsappWeb.service');
 
 const router = express.Router();
 
@@ -157,7 +159,28 @@ router.patch(
     if (settings) updateData.settings = settings;
     if (isActive !== undefined) updateData.isActive = isActive;
     if (credentials) {
-      updateData.credentials = { encrypted: encrypt(JSON.stringify(credentials)) };
+      // Merge new credentials with existing ones (don't replace entirely)
+      let existingCredentials = {};
+      try {
+        const encryptedData = existing.credentials?.encrypted;
+        if (encryptedData) {
+          existingCredentials = JSON.parse(decrypt(encryptedData));
+        }
+      } catch (e) {
+        // If decryption fails, start fresh
+        logger.warn('Failed to decrypt existing credentials for merge', { channelId: existing.id });
+      }
+
+      // Merge: only update fields that were actually provided (not empty strings)
+      const mergedCredentials = { ...existingCredentials };
+      for (const [key, value] of Object.entries(credentials)) {
+        // Update if value is provided and not an empty string (but allow false/true booleans)
+        if (value !== '' && value !== undefined && value !== null) {
+          mergedCredentials[key] = value;
+        }
+      }
+
+      updateData.credentials = { encrypted: encrypt(JSON.stringify(mergedCredentials)) };
     }
 
     const channel = await prisma.channelConfig.update({
@@ -510,7 +533,50 @@ router.post(
           },
         });
 
-        logger.info('Email sent to contact', { channelId: channel.id, contactId, leadId, messageId: result.messageId });
+        // Create or update conversation for this email thread
+        let conversation = await prisma.conversation.findFirst({
+          where: {
+            tenantId,
+            leadId,
+            contactId,
+            channelType: 'EMAIL_SMTP',
+          },
+        });
+
+        if (!conversation) {
+          conversation = await prisma.conversation.create({
+            data: {
+              tenantId,
+              leadId,
+              contactId,
+              channelType: 'EMAIL_SMTP',
+              status: 'OPEN',
+              lastMessageAt: new Date(),
+            },
+          });
+        }
+
+        // Add message to conversation
+        await prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            direction: 'OUTBOUND',
+            content: messageBody,
+            metadata: {
+              subject,
+              messageId: result.messageId,
+              sentAt: new Date().toISOString(),
+            },
+          },
+        });
+
+        // Update conversation lastMessageAt
+        await prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { lastMessageAt: new Date() },
+        });
+
+        logger.info('Email sent to contact', { channelId: channel.id, contactId, leadId, conversationId: conversation.id, messageId: result.messageId });
 
         return success(res, {
           success: true,
@@ -715,6 +781,293 @@ router.post(
     }
 
     throw AppError.badRequest(`Sending not implemented for: ${channel.channelType}`);
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/test-imap
+ * @desc    Test IMAP connection for a channel
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/test-imap',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'EMAIL_SMTP') {
+      throw AppError.badRequest('IMAP is only available for EMAIL_SMTP channels');
+    }
+
+    // Decrypt credentials
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      } else {
+        throw new Error('No credentials found');
+      }
+    } catch (error) {
+      throw AppError.badRequest('Failed to decrypt channel credentials');
+    }
+
+    // Check if IMAP is enabled
+    if (!credentials.imapEnabled || !credentials.imapHost) {
+      throw AppError.badRequest('IMAP is not enabled for this channel. Enable it in channel settings.');
+    }
+
+    try {
+      const result = await imapPollerService.testConnection(credentials);
+
+      logger.info('IMAP connection test successful', { channelId: channel.id });
+
+      return success(res, {
+        success: true,
+        message: 'IMAP connection successful',
+        mailboxes: result.mailboxes,
+      });
+    } catch (error) {
+      logger.error('IMAP connection test failed', { channelId: channel.id, error: error.message });
+      throw AppError.badRequest(`IMAP connection failed: ${error.message}`);
+    }
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/poll-imap
+ * @desc    Manually trigger IMAP polling for a channel
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/poll-imap',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'EMAIL_SMTP') {
+      throw AppError.badRequest('IMAP polling is only available for EMAIL_SMTP channels');
+    }
+
+    try {
+      await imapPollerService.pollChannelById(channel.id);
+
+      logger.info('IMAP manual poll completed', { channelId: channel.id });
+
+      return success(res, {
+        success: true,
+        message: 'IMAP polling completed. Check conversations for new messages.',
+      });
+    } catch (error) {
+      logger.error('IMAP manual poll failed', { channelId: channel.id, error: error.message });
+      throw AppError.badRequest(`IMAP polling failed: ${error.message}`);
+    }
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/poll-all-imap
+ * @desc    Manually trigger IMAP polling for all channels
+ * @access  Private (Admin)
+ */
+router.post(
+  '/poll-all-imap',
+  requirePermission('channels:update'),
+  asyncHandler(async (req, res) => {
+    try {
+      await imapPollerService.pollAll();
+
+      return success(res, {
+        success: true,
+        message: 'IMAP polling completed for all channels.',
+      });
+    } catch (error) {
+      logger.error('IMAP poll all failed', { error: error.message });
+      throw AppError.badRequest(`IMAP polling failed: ${error.message}`);
+    }
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/whatsapp-web/connect
+ * @desc    Initialize WhatsApp Web session (opens browser for QR scan)
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/whatsapp-web/connect',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'WHATSAPP_WEB') {
+      throw AppError.badRequest('Channel is not WhatsApp Web type');
+    }
+
+    const tenantId = getTenantId(req);
+
+    // Check if already connected
+    const existingStatus = await whatsappWebService.getStatus(tenantId, channel.id);
+    if (existingStatus === 'CONNECTED') {
+      const profile = await whatsappWebService.getProfileInfo(tenantId, channel.id);
+      return success(res, {
+        status: 'connected',
+        message: 'WhatsApp Web already connected',
+        profile,
+      });
+    }
+
+    // Set up QR callback
+    let qrCode = null;
+    whatsappWebService.onQR(tenantId, channel.id, (qr) => {
+      qrCode = qr;
+    });
+
+    // Set up ready callback
+    let isReady = false;
+    whatsappWebService.onReady(tenantId, channel.id, () => {
+      isReady = true;
+    });
+
+    // Initialize client (opens browser window)
+    await whatsappWebService.initClient(tenantId, channel.id);
+
+    // Wait for QR or ready (whichever comes first)
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    if (isReady) {
+      const profile = await whatsappWebService.getProfileInfo(tenantId, channel.id);
+      return success(res, {
+        status: 'connected',
+        message: 'WhatsApp Web connected successfully',
+        profile,
+      });
+    }
+
+    return success(res, {
+      status: 'awaiting_scan',
+      qr: qrCode,
+      message: 'Scan QR code with WhatsApp on your phone',
+    });
+  })
+);
+
+/**
+ * @route   GET /api/v1/channels/:id/whatsapp-web/status
+ * @desc    Check WhatsApp Web connection status
+ * @access  Private
+ */
+router.get(
+  '/:id/whatsapp-web/status',
+  requirePermission('channels:read'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const tenantId = getTenantId(req);
+    const status = await whatsappWebService.getStatus(tenantId, channel.id);
+
+    let profile = null;
+    if (status === 'CONNECTED') {
+      profile = await whatsappWebService.getProfileInfo(tenantId, channel.id);
+    }
+
+    return success(res, { status, profile });
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/whatsapp-web/disconnect
+ * @desc    Disconnect WhatsApp Web session
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/whatsapp-web/disconnect',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const tenantId = getTenantId(req);
+    await whatsappWebService.disconnect(tenantId, channel.id);
+
+    return success(res, { message: 'WhatsApp Web disconnected successfully' });
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/whatsapp-web/send
+ * @desc    Send WhatsApp message via WhatsApp Web
+ * @access  Private
+ */
+router.post(
+  '/:id/whatsapp-web/send',
+  requirePermission('channels:read'),
+  [
+    param('id').isInt().toInt(),
+    body('phoneNumber').notEmpty().withMessage('Phone number is required'),
+    body('message').notEmpty().withMessage('Message is required'),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { phoneNumber, message } = req.body;
+
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id, isActive: true }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel not found or inactive');
+
+    if (channel.channelType !== 'WHATSAPP_WEB') {
+      throw AppError.badRequest('Channel is not WhatsApp Web type');
+    }
+
+    const tenantId = getTenantId(req);
+
+    // Check if connected
+    const status = await whatsappWebService.getStatus(tenantId, channel.id);
+    if (status !== 'CONNECTED') {
+      throw AppError.badRequest('WhatsApp Web not connected. Please connect first.');
+    }
+
+    const result = await whatsappWebService.sendMessage(tenantId, channel.id, phoneNumber, message);
+
+    if (result.success) {
+      logger.info('WhatsApp Web message sent', {
+        channelId: channel.id,
+        phoneNumber,
+        messageId: result.messageId,
+      });
+      return success(res, {
+        success: true,
+        message: 'Message sent successfully',
+        messageId: result.messageId,
+      });
+    } else {
+      throw AppError.badRequest(`Failed to send message: ${result.error}`);
+    }
   })
 );
 

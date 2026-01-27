@@ -23,8 +23,10 @@ const analyticsRoutes = require('./routes/analytics');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
 const industryRoutes = require('./routes/industries');
+const positionRoutes = require('./routes/positions');
 const noteRoutes = require('./routes/notes');
 const activityRoutes = require('./routes/activity');
+const tenantRoutes = require('./routes/tenants');
 
 // Initialize express app
 const app = express();
@@ -115,8 +117,10 @@ app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/webhooks', webhookRoutes);
 app.use('/api/v1/industries', industryRoutes);
+app.use('/api/v1/positions', positionRoutes);
 app.use('/api/v1/notes', noteRoutes);
 app.use('/api/v1/activity', activityRoutes);
+app.use('/api/v1/tenants', tenantRoutes);
 
 // Serve static files in production
 if (config.env === 'production') {
