@@ -50,22 +50,62 @@ class WhatsAppWebService {
     logger.info(`Launching WhatsApp Web browser for ${key}...`);
 
     // Launch browser with persistent context (saves login state)
+    // Use proper user agent to avoid WhatsApp's browser detection
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
     const context = await chromium.launchPersistentContext(userDataDir, {
       headless: config.scraper.headless, // Use config setting (true for production servers)
       viewport: { width: 1280, height: 800 },
+      userAgent: userAgent,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--window-size=1280,800',
+        `--user-agent=${userAgent}`,
       ],
+      ignoreDefaultArgs: ['--enable-automation'],
+      bypassCSP: true,
     });
 
     const page = await context.newPage();
 
+    // Add stealth measures to avoid detection
+    await page.addInitScript(() => {
+      // Remove webdriver property
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+      // Mock plugins
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      });
+
+      // Mock languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      });
+
+      // Mock platform
+      Object.defineProperty(navigator, 'platform', {
+        get: () => 'Win32',
+      });
+
+      // Remove automation indicators
+      window.chrome = { runtime: {} };
+    });
+
     // Navigate to WhatsApp Web
     logger.info(`Navigating to WhatsApp Web for ${key}...`);
+    logger.info(`[Debug] Headless mode: ${config.scraper.headless}`);
+
     await page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded' });
+    logger.info(`[Debug] Page loaded, URL: ${page.url()}`);
+
+    // Wait for initial page load
+    await page.waitForTimeout(3000);
+    logger.info(`[Debug] Waited 3s after page load`);
 
     // Check if already logged in or need QR scan
     const isLoggedIn = await this.waitForLogin(page, key);
@@ -116,21 +156,34 @@ class WhatsAppWebService {
           'canvas[aria-label*="QR"]',
           '[data-testid="qrcode"]',
           'div[data-ref]', // QR code container
+          'canvas', // Any canvas (fallback)
         ];
+
+        logger.info(`[QR Debug] Checking for QR code selectors...`);
 
         for (const selector of qrSelectors) {
           const qrElement = await page.$(selector);
           if (qrElement) {
-            logger.info(`QR code visible for ${key} - capturing and waiting for scan...`);
+            logger.info(`[QR Debug] QR code visible for ${key} via selector: ${selector}`);
 
             // Capture QR code as base64 image
             try {
               const qrScreenshot = await qrElement.screenshot({ type: 'png' });
               const qrBase64 = qrScreenshot.toString('base64');
               this.qrCodes.set(key, `data:image/png;base64,${qrBase64}`);
-              logger.info(`QR code captured for ${key}`);
+              logger.info(`[QR Debug] QR code captured for ${key} (${qrBase64.length} bytes)`);
             } catch (screenshotError) {
-              logger.warn(`Failed to capture QR screenshot: ${screenshotError.message}`);
+              logger.warn(`[QR Debug] Failed to capture QR screenshot: ${screenshotError.message}`);
+
+              // Try full page screenshot as fallback
+              try {
+                const fullScreenshot = await page.screenshot({ type: 'png' });
+                const fullBase64 = fullScreenshot.toString('base64');
+                this.qrCodes.set(key, `data:image/png;base64,${fullBase64}`);
+                logger.info(`[QR Debug] Full page screenshot captured as fallback`);
+              } catch (fullError) {
+                logger.error(`[QR Debug] Full page screenshot also failed: ${fullError.message}`);
+              }
             }
 
             const qrCallback = this.qrCallbacks.get(key);
@@ -470,32 +523,63 @@ class WhatsAppWebService {
     const key = this.getKey(tenantId, channelId);
     const client = this.getClient(tenantId, channelId);
 
+    logger.info(`[QR Debug] captureQRCode called for ${key}`);
+
     if (!client || !client.page) {
+      logger.warn(`[QR Debug] No client or page for ${key}`);
       return null;
     }
 
     try {
+      // Wait a bit for page to fully render
+      await client.page.waitForTimeout(2000);
+
+      // Log current URL
+      const currentUrl = client.page.url();
+      logger.info(`[QR Debug] Current URL: ${currentUrl}`);
+
+      // Take a debug screenshot of the full page
+      const debugDir = path.join(__dirname, '../../.whatsapp_sessions', 'debug');
+      if (!fs.existsSync(debugDir)) {
+        fs.mkdirSync(debugDir, { recursive: true });
+      }
+      const debugScreenshot = path.join(debugDir, `page_${key}_${Date.now()}.png`);
+      await client.page.screenshot({ path: debugScreenshot, fullPage: true });
+      logger.info(`[QR Debug] Full page screenshot saved: ${debugScreenshot}`);
+
+      // Log page content (first 1000 chars for debugging)
+      const pageContent = await client.page.content();
+      logger.info(`[QR Debug] Page content length: ${pageContent.length}`);
+
       const qrSelectors = [
         'canvas[aria-label="Scan this QR code to link a device!"]',
         'canvas[aria-label*="QR"]',
         '[data-testid="qrcode"]',
         'div[data-ref] canvas',
+        'canvas', // Try any canvas element
       ];
 
       for (const selector of qrSelectors) {
+        logger.info(`[QR Debug] Trying selector: ${selector}`);
         const qrElement = await client.page.$(selector);
         if (qrElement) {
+          logger.info(`[QR Debug] Found element with selector: ${selector}`);
           const qrScreenshot = await qrElement.screenshot({ type: 'png' });
           const qrBase64 = qrScreenshot.toString('base64');
           const qrDataUrl = `data:image/png;base64,${qrBase64}`;
           this.qrCodes.set(key, qrDataUrl);
+          logger.info(`[QR Debug] QR code captured successfully (${qrBase64.length} bytes)`);
           return qrDataUrl;
+        } else {
+          logger.info(`[QR Debug] Selector not found: ${selector}`);
         }
       }
 
       // If no QR element found, take a screenshot of the full page area
+      logger.info(`[QR Debug] Trying fallback area selectors`);
       const qrArea = await client.page.$('div._aoe1, div._akaw');
       if (qrArea) {
+        logger.info(`[QR Debug] Found QR area element`);
         const qrScreenshot = await qrArea.screenshot({ type: 'png' });
         const qrBase64 = qrScreenshot.toString('base64');
         const qrDataUrl = `data:image/png;base64,${qrBase64}`;
@@ -503,9 +587,17 @@ class WhatsAppWebService {
         return qrDataUrl;
       }
 
-      return null;
+      // Last resort: screenshot the entire viewport
+      logger.info(`[QR Debug] Taking full viewport screenshot as last resort`);
+      const fullScreenshot = await client.page.screenshot({ type: 'png' });
+      const fullBase64 = fullScreenshot.toString('base64');
+      const fullDataUrl = `data:image/png;base64,${fullBase64}`;
+      this.qrCodes.set(key, fullDataUrl);
+      logger.info(`[QR Debug] Full viewport screenshot captured (${fullBase64.length} bytes)`);
+      return fullDataUrl;
+
     } catch (error) {
-      logger.error('Error capturing QR code:', error);
+      logger.error(`[QR Debug] Error capturing QR code: ${error.message}`, error);
       return null;
     }
   }
