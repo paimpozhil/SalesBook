@@ -134,15 +134,32 @@ function ChannelList() {
     setEditingChannel(null);
   };
 
-  const handleEdit = (channel) => {
-    setEditingChannel(channel);
-    setSelectedType(channel.channelType);
-    setFormData({
-      name: channel.name,
-      credentials: {}, // Don't prefill credentials for security
-    });
-    setModalStep(2);
-    setShowModal(true);
+  const handleEdit = async (channel) => {
+    try {
+      // Fetch full channel details including masked credentials
+      const response = await api.get(`/channels/${channel.id}`);
+      const fullChannel = response.data.data;
+
+      setEditingChannel(fullChannel);
+      setSelectedType(fullChannel.channelType);
+      setFormData({
+        name: fullChannel.name,
+        credentials: fullChannel.maskedCredentials || {}, // Pre-fill with safe values
+      });
+      setModalStep(2);
+      setShowModal(true);
+    } catch (error) {
+      console.error('Failed to fetch channel details:', error);
+      // Fallback to basic edit
+      setEditingChannel(channel);
+      setSelectedType(channel.channelType);
+      setFormData({
+        name: channel.name,
+        credentials: {},
+      });
+      setModalStep(2);
+      setShowModal(true);
+    }
   };
 
   const handleCloseModal = () => {

@@ -206,6 +206,42 @@ router.patch(
 );
 
 /**
+ * @route   POST /api/v1/users/:id/reset-password
+ * @desc    Reset user password (Admin only)
+ * @access  Private (Tenant Admin)
+ */
+router.post(
+  '/:id/reset-password',
+  requireTenantAdmin,
+  [
+    param('id').isInt().toInt(),
+    body('password').isLength({ min: 8 }).withMessage('Password min 8 chars'),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { password } = req.body;
+
+    // Verify user exists in tenant
+    const existing = await prisma.user.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!existing) {
+      throw AppError.notFound('User not found');
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { passwordHash },
+    });
+
+    return success(res, { message: 'Password reset successfully' });
+  })
+);
+
+/**
  * @route   DELETE /api/v1/users/:id
  * @desc    Delete user
  * @access  Private (Tenant Admin)

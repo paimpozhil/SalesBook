@@ -420,16 +420,37 @@ class WhatsAppWebService {
 
   /**
    * Get connection status
+   * Auto-reconnects if session exists but browser is not running
    */
-  async getStatus(tenantId, channelId) {
-    const client = this.getClient(tenantId, channelId);
+  async getStatus(tenantId, channelId, autoReconnect = true) {
+    const key = this.getKey(tenantId, channelId);
+    let client = this.getClient(tenantId, channelId);
+
+    // If no browser running, check if we have a saved session and try to reconnect
     if (!client || !client.context) {
-      return 'DISCONNECTED';
+      if (autoReconnect) {
+        const sessionPath = path.join(__dirname, '../../.whatsapp_sessions', key);
+        if (fs.existsSync(sessionPath)) {
+          logger.info(`Auto-reconnecting WhatsApp for ${key} using saved session...`);
+          try {
+            client = await this.initClient(tenantId, channelId);
+            // Wait for page to load
+            await client.page.waitForTimeout(5000);
+          } catch (error) {
+            logger.error(`Auto-reconnect failed for ${key}:`, error.message);
+            return 'DISCONNECTED';
+          }
+        }
+      }
+      if (!client || !client.context) {
+        return 'DISCONNECTED';
+      }
     }
 
     try {
       // Check if browser is still connected
       if (!client.context.browser() || !client.context.browser().isConnected()) {
+        this.browsers.delete(key);
         return 'DISCONNECTED';
       }
 

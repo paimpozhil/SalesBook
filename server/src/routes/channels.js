@@ -118,21 +118,46 @@ router.get(
   asyncHandler(async (req, res) => {
     const channel = await prisma.channelConfig.findFirst({
       where: addTenantFilter(req, { id: req.params.id }),
-      select: {
-        id: true,
-        channelType: true,
-        provider: true,
-        name: true,
-        settings: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      },
     });
 
     if (!channel) throw AppError.notFound('Channel config not found');
 
-    return success(res, channel);
+    // Decrypt credentials and return masked version (hide sensitive fields)
+    let maskedCredentials = {};
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        const decrypted = JSON.parse(decrypt(encryptedData));
+        // Define which fields are safe to show
+        const safeFields = ['host', 'port', 'secure', 'fromName', 'fromEmail', 'user', 'imapEnabled', 'imapHost', 'imapPort', 'imapUser', 'provider', 'fromNumber', 'phoneNumberId'];
+        for (const field of safeFields) {
+          if (decrypted[field] !== undefined) {
+            maskedCredentials[field] = decrypted[field];
+          }
+        }
+        // Add masked indicators for sensitive fields
+        if (decrypted.pass) maskedCredentials._hasPassword = true;
+        if (decrypted.imapPass) maskedCredentials._hasImapPassword = true;
+        if (decrypted.apiKey) maskedCredentials._hasApiKey = true;
+        if (decrypted.authToken) maskedCredentials._hasAuthToken = true;
+        if (decrypted.accessToken) maskedCredentials._hasAccessToken = true;
+        if (decrypted.botToken) maskedCredentials._hasBotToken = true;
+      }
+    } catch (e) {
+      logger.warn('Failed to decrypt credentials for display', { channelId: channel.id });
+    }
+
+    return success(res, {
+      id: channel.id,
+      channelType: channel.channelType,
+      provider: channel.provider,
+      name: channel.name,
+      settings: channel.settings,
+      isActive: channel.isActive,
+      createdAt: channel.createdAt,
+      updatedAt: channel.updatedAt,
+      maskedCredentials,
+    });
   })
 );
 
