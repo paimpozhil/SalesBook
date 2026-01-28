@@ -188,7 +188,12 @@ class WhatsAppWebService {
 
             const qrCallback = this.qrCallbacks.get(key);
             if (qrCallback) qrCallback('QR_VISIBLE');
-            break;
+
+            // Return false immediately when QR is detected
+            // This allows the API to return the QR code to the frontend
+            // The polling will handle checking for successful login
+            logger.info(`[QR Debug] QR detected, returning from waitForLogin`);
+            return false;
           }
         }
 
