@@ -960,22 +960,17 @@ router.post(
 
     // Try to capture QR code image for display in UI
     let qrImage = await whatsappWebService.captureQRCode(tenantId, channel.id);
-    logger.info(`[QR API] captureQRCode returned: ${qrImage ? `image (${qrImage.length} chars)` : 'null'}`);
 
     if (!qrImage) {
       qrImage = whatsappWebService.getQRCode(tenantId, channel.id);
-      logger.info(`[QR API] getQRCode fallback: ${qrImage ? `image (${qrImage.length} chars)` : 'null'}`);
     }
 
-    const response = {
+    return success(res, {
       status: 'awaiting_scan',
       qr: qrCode,
       qrImage: qrImage,
       message: 'Scan QR code with WhatsApp on your phone',
-    };
-    logger.info(`[QR API] Sending response with qrImage: ${response.qrImage ? 'present' : 'absent'}`);
-
-    return success(res, response);
+    });
   })
 );
 

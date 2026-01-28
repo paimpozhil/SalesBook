@@ -98,14 +98,11 @@ class WhatsAppWebService {
 
     // Navigate to WhatsApp Web
     logger.info(`Navigating to WhatsApp Web for ${key}...`);
-    logger.info(`[Debug] Headless mode: ${config.scraper.headless}`);
 
     await page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded' });
-    logger.info(`[Debug] Page loaded, URL: ${page.url()}`);
 
     // Wait for initial page load
     await page.waitForTimeout(3000);
-    logger.info(`[Debug] Waited 3s after page load`);
 
     // Check if already logged in or need QR scan
     const isLoggedIn = await this.waitForLogin(page, key);
@@ -159,40 +156,34 @@ class WhatsAppWebService {
           'canvas', // Any canvas (fallback)
         ];
 
-        logger.info(`[QR Debug] Checking for QR code selectors...`);
-
         for (const selector of qrSelectors) {
           const qrElement = await page.$(selector);
           if (qrElement) {
-            logger.info(`[QR Debug] QR code visible for ${key} via selector: ${selector}`);
+            logger.info(`QR code visible for ${key}`);
 
             // Capture QR code as base64 image
             try {
               const qrScreenshot = await qrElement.screenshot({ type: 'png' });
               const qrBase64 = qrScreenshot.toString('base64');
               this.qrCodes.set(key, `data:image/png;base64,${qrBase64}`);
-              logger.info(`[QR Debug] QR code captured for ${key} (${qrBase64.length} bytes)`);
             } catch (screenshotError) {
-              logger.warn(`[QR Debug] Failed to capture QR screenshot: ${screenshotError.message}`);
+              logger.warn(`Failed to capture QR screenshot: ${screenshotError.message}`);
 
               // Try full page screenshot as fallback
               try {
                 const fullScreenshot = await page.screenshot({ type: 'png' });
                 const fullBase64 = fullScreenshot.toString('base64');
                 this.qrCodes.set(key, `data:image/png;base64,${fullBase64}`);
-                logger.info(`[QR Debug] Full page screenshot captured as fallback`);
               } catch (fullError) {
-                logger.error(`[QR Debug] Full page screenshot also failed: ${fullError.message}`);
+                logger.error(`Full page screenshot failed: ${fullError.message}`);
               }
             }
 
             const qrCallback = this.qrCallbacks.get(key);
             if (qrCallback) qrCallback('QR_VISIBLE');
 
-            // Return false immediately when QR is detected
-            // This allows the API to return the QR code to the frontend
+            // Return immediately when QR is detected
             // The polling will handle checking for successful login
-            logger.info(`[QR Debug] QR detected, returning from waitForLogin`);
             return false;
           }
         }
@@ -528,33 +519,13 @@ class WhatsAppWebService {
     const key = this.getKey(tenantId, channelId);
     const client = this.getClient(tenantId, channelId);
 
-    logger.info(`[QR Debug] captureQRCode called for ${key}`);
-
     if (!client || !client.page) {
-      logger.warn(`[QR Debug] No client or page for ${key}`);
       return null;
     }
 
     try {
       // Wait a bit for page to fully render
       await client.page.waitForTimeout(2000);
-
-      // Log current URL
-      const currentUrl = client.page.url();
-      logger.info(`[QR Debug] Current URL: ${currentUrl}`);
-
-      // Take a debug screenshot of the full page
-      const debugDir = path.join(__dirname, '../../.whatsapp_sessions', 'debug');
-      if (!fs.existsSync(debugDir)) {
-        fs.mkdirSync(debugDir, { recursive: true });
-      }
-      const debugScreenshot = path.join(debugDir, `page_${key}_${Date.now()}.png`);
-      await client.page.screenshot({ path: debugScreenshot, fullPage: true });
-      logger.info(`[QR Debug] Full page screenshot saved: ${debugScreenshot}`);
-
-      // Log page content (first 1000 chars for debugging)
-      const pageContent = await client.page.content();
-      logger.info(`[QR Debug] Page content length: ${pageContent.length}`);
 
       const qrSelectors = [
         'canvas[aria-label="Scan this QR code to link a device!"]',
@@ -565,26 +536,19 @@ class WhatsAppWebService {
       ];
 
       for (const selector of qrSelectors) {
-        logger.info(`[QR Debug] Trying selector: ${selector}`);
         const qrElement = await client.page.$(selector);
         if (qrElement) {
-          logger.info(`[QR Debug] Found element with selector: ${selector}`);
           const qrScreenshot = await qrElement.screenshot({ type: 'png' });
           const qrBase64 = qrScreenshot.toString('base64');
           const qrDataUrl = `data:image/png;base64,${qrBase64}`;
           this.qrCodes.set(key, qrDataUrl);
-          logger.info(`[QR Debug] QR code captured successfully (${qrBase64.length} bytes)`);
           return qrDataUrl;
-        } else {
-          logger.info(`[QR Debug] Selector not found: ${selector}`);
         }
       }
 
-      // If no QR element found, take a screenshot of the full page area
-      logger.info(`[QR Debug] Trying fallback area selectors`);
+      // If no QR element found, try fallback area selectors
       const qrArea = await client.page.$('div._aoe1, div._akaw');
       if (qrArea) {
-        logger.info(`[QR Debug] Found QR area element`);
         const qrScreenshot = await qrArea.screenshot({ type: 'png' });
         const qrBase64 = qrScreenshot.toString('base64');
         const qrDataUrl = `data:image/png;base64,${qrBase64}`;
@@ -593,16 +557,14 @@ class WhatsAppWebService {
       }
 
       // Last resort: screenshot the entire viewport
-      logger.info(`[QR Debug] Taking full viewport screenshot as last resort`);
       const fullScreenshot = await client.page.screenshot({ type: 'png' });
       const fullBase64 = fullScreenshot.toString('base64');
       const fullDataUrl = `data:image/png;base64,${fullBase64}`;
       this.qrCodes.set(key, fullDataUrl);
-      logger.info(`[QR Debug] Full viewport screenshot captured (${fullBase64.length} bytes)`);
       return fullDataUrl;
 
     } catch (error) {
-      logger.error(`[QR Debug] Error capturing QR code: ${error.message}`, error);
+      logger.error(`Error capturing QR code: ${error.message}`);
       return null;
     }
   }
