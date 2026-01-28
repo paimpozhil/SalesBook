@@ -18,6 +18,7 @@ class WhatsAppWebService {
     this.statusCallbacks = new Map();
     this.messageQueues = new Map(); // key: "tenantId_channelId" -> array of pending messages
     this.isProcessing = new Map(); // key: "tenantId_channelId" -> boolean
+    this.qrCodes = new Map(); // key: "tenantId_channelId" -> base64 QR code image
   }
 
   getKey(tenantId, channelId) {
@@ -120,7 +121,18 @@ class WhatsAppWebService {
         for (const selector of qrSelectors) {
           const qrElement = await page.$(selector);
           if (qrElement) {
-            logger.info(`QR code visible for ${key} - waiting for scan...`);
+            logger.info(`QR code visible for ${key} - capturing and waiting for scan...`);
+
+            // Capture QR code as base64 image
+            try {
+              const qrScreenshot = await qrElement.screenshot({ type: 'png' });
+              const qrBase64 = qrScreenshot.toString('base64');
+              this.qrCodes.set(key, `data:image/png;base64,${qrBase64}`);
+              logger.info(`QR code captured for ${key}`);
+            } catch (screenshotError) {
+              logger.warn(`Failed to capture QR screenshot: ${screenshotError.message}`);
+            }
+
             const qrCallback = this.qrCallbacks.get(key);
             if (qrCallback) qrCallback('QR_VISIBLE');
             break;
@@ -441,6 +453,61 @@ class WhatsAppWebService {
   onStatusChange(tenantId, channelId, callback) {
     const key = this.getKey(tenantId, channelId);
     this.statusCallbacks.set(key, callback);
+  }
+
+  /**
+   * Get QR code as base64 image
+   */
+  getQRCode(tenantId, channelId) {
+    const key = this.getKey(tenantId, channelId);
+    return this.qrCodes.get(key) || null;
+  }
+
+  /**
+   * Capture fresh QR code from current page
+   */
+  async captureQRCode(tenantId, channelId) {
+    const key = this.getKey(tenantId, channelId);
+    const client = this.getClient(tenantId, channelId);
+
+    if (!client || !client.page) {
+      return null;
+    }
+
+    try {
+      const qrSelectors = [
+        'canvas[aria-label="Scan this QR code to link a device!"]',
+        'canvas[aria-label*="QR"]',
+        '[data-testid="qrcode"]',
+        'div[data-ref] canvas',
+      ];
+
+      for (const selector of qrSelectors) {
+        const qrElement = await client.page.$(selector);
+        if (qrElement) {
+          const qrScreenshot = await qrElement.screenshot({ type: 'png' });
+          const qrBase64 = qrScreenshot.toString('base64');
+          const qrDataUrl = `data:image/png;base64,${qrBase64}`;
+          this.qrCodes.set(key, qrDataUrl);
+          return qrDataUrl;
+        }
+      }
+
+      // If no QR element found, take a screenshot of the full page area
+      const qrArea = await client.page.$('div._aoe1, div._akaw');
+      if (qrArea) {
+        const qrScreenshot = await qrArea.screenshot({ type: 'png' });
+        const qrBase64 = qrScreenshot.toString('base64');
+        const qrDataUrl = `data:image/png;base64,${qrBase64}`;
+        this.qrCodes.set(key, qrDataUrl);
+        return qrDataUrl;
+      }
+
+      return null;
+    } catch (error) {
+      logger.error('Error capturing QR code:', error);
+      return null;
+    }
   }
 
   /**

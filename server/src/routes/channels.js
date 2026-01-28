@@ -958,9 +958,16 @@ router.post(
       });
     }
 
+    // Try to capture QR code image for display in UI
+    let qrImage = await whatsappWebService.captureQRCode(tenantId, channel.id);
+    if (!qrImage) {
+      qrImage = whatsappWebService.getQRCode(tenantId, channel.id);
+    }
+
     return success(res, {
       status: 'awaiting_scan',
       qr: qrCode,
+      qrImage: qrImage, // Base64 encoded QR code image for display in headless mode
       message: 'Scan QR code with WhatsApp on your phone',
     });
   })

@@ -12,6 +12,7 @@ import api from '../../services/api';
 function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
   const [status, setStatus] = useState('checking'); // checking, disconnected, awaiting_scan, connected
   const [qrCode, setQrCode] = useState(null);
+  const [qrImage, setQrImage] = useState(null); // Base64 image for headless mode
   const [connecting, setConnecting] = useState(false);
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState(null);
@@ -36,6 +37,7 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
         setStatus('connected');
         setProfile(connProfile);
         setQrCode(null);
+        setQrImage(null);
         if (pollInterval.current) {
           clearInterval(pollInterval.current);
           pollInterval.current = null;
@@ -55,19 +57,21 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
     setConnecting(true);
     setError(null);
     setQrCode(null);
+    setQrImage(null);
 
     try {
       const response = await api.post(`/channels/${channelId}/whatsapp-web/connect`);
-      const { status: connStatus, qr, message, profile: connProfile } = response.data.data;
+      const { status: connStatus, qr, qrImage: capturedQrImage, message, profile: connProfile } = response.data.data;
 
       if (connStatus === 'connected') {
         setStatus('connected');
         setProfile(connProfile);
         toast.success('WhatsApp Web connected successfully');
         onConnected?.();
-      } else if (connStatus === 'awaiting_scan' && qr) {
+      } else if (connStatus === 'awaiting_scan') {
         setStatus('awaiting_scan');
         setQrCode(qr);
+        setQrImage(capturedQrImage); // Captured QR image for headless mode
         toast.success('QR code ready - scan with your phone');
         // Start polling for status
         startPolling();
@@ -96,6 +100,7 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
           setStatus('connected');
           setProfile(connProfile);
           setQrCode(null);
+          setQrImage(null);
           clearInterval(pollInterval.current);
           pollInterval.current = null;
           toast.success('WhatsApp Web connected!');
@@ -115,6 +120,7 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
           setError('QR code expired. Please try again.');
           setStatus('disconnected');
           setQrCode(null);
+          setQrImage(null);
         }
       }
     }, 120000);
@@ -126,6 +132,7 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
       setStatus('disconnected');
       setProfile(null);
       setQrCode(null);
+      setQrImage(null);
       toast.success('WhatsApp Web disconnected');
       onDisconnected?.();
     } catch (err) {
@@ -185,11 +192,21 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
           </div>
         )}
 
-        {status === 'awaiting_scan' && qrCode && (
+        {status === 'awaiting_scan' && (qrCode || qrImage) && (
           <div className="text-center py-3">
             <h6 className="mb-3">Scan this QR code with WhatsApp</h6>
             <div className="d-inline-block p-3 bg-white rounded shadow-sm mb-3">
-              <QRCodeSVG value={qrCode} size={256} level="M" />
+              {qrImage ? (
+                // Display captured QR image (for headless mode / production)
+                <img
+                  src={qrImage}
+                  alt="WhatsApp QR Code"
+                  style={{ width: 256, height: 256 }}
+                />
+              ) : qrCode ? (
+                // Fall back to QRCodeSVG (for non-headless mode)
+                <QRCodeSVG value={qrCode} size={256} level="M" />
+              ) : null}
             </div>
             <p className="text-muted small">
               Open WhatsApp on your phone &rarr; Menu &rarr; Linked Devices &rarr; Link a Device
