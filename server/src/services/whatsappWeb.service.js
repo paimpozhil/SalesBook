@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
+const config = require('../config');
 
 /**
  * WhatsApp Web Service using Playwright
@@ -49,7 +50,7 @@ class WhatsAppWebService {
 
     // Launch browser with persistent context (saves login state)
     const context = await chromium.launchPersistentContext(userDataDir, {
-      headless: false, // Show browser so user can see messages being sent
+      headless: config.scraper.headless, // Use config setting (true for production servers)
       viewport: { width: 1280, height: 800 },
       args: [
         '--no-sandbox',
