@@ -103,6 +103,7 @@ function DataSourceList() {
                 <th>File / Source</th>
                 <th>Records</th>
                 <th>Leads</th>
+                <th>Uploaded By</th>
                 <th>Imported</th>
                 <th>Status</th>
                 <th></th>
@@ -138,6 +139,7 @@ function DataSourceList() {
                   </td>
                   <td>{source.recordCount || '-'}</td>
                   <td>{source._count?.leads || 0}</td>
+                  <td>{source.createdBy?.name || '-'}</td>
                   <td>
                     {source.lastRunAt
                       ? new Date(source.lastRunAt).toLocaleDateString()

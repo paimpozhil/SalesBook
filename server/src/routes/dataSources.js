@@ -77,6 +77,7 @@ router.get(
           fileSize: true,
           recordCount: true,
           createdAt: true,
+          createdBy: { select: { id: true, name: true } },
           _count: { select: { leads: true, runs: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -120,6 +121,7 @@ router.post(
         proxyConfig,
         rateLimit,
         pollingFrequency,
+        createdById: req.user.id,
       },
     });
 
@@ -350,6 +352,7 @@ router.post(
         url,
         config: { script: { code: script } },
         isActive: true,
+        createdById: req.user?.id,
       },
     });
 
@@ -507,6 +510,7 @@ router.post(
         recordCount: leads.length,
         isActive: false, // File imports don't run
         config: {},
+        createdById: req.user?.id,
       },
     });
 

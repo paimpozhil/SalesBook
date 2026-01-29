@@ -48,6 +48,7 @@ router.get(
         settings: true,
         isActive: true,
         createdAt: true,
+        createdBy: { select: { id: true, name: true } },
         // Don't return credentials
       },
       orderBy: { createdAt: 'desc' },
@@ -90,6 +91,7 @@ router.post(
         provider,
         credentials: { encrypted: encryptedCredentials },
         settings: settings || {},
+        createdById: req.user.id,
       },
       select: {
         id: true,

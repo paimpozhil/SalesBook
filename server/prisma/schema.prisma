@@ -66,6 +66,8 @@ model User {
   assignedLeads      Lead[]            @relation("AssignedTo")
   createdTemplates   Template[]
   createdCampaigns   Campaign[]
+  createdDataSources DataSource[]
+  createdChannels    ChannelConfig[]
   assignedConversations Conversation[]
   refreshTokens      RefreshToken[]
   notes              Note[]
@@ -278,16 +280,19 @@ model DataSource {
   fileName         String?          @map("file_name") @db.VarChar(255)
   fileSize         Int?             @map("file_size")
   recordCount      Int?             @map("record_count")
+  createdById      Int?             @map("created_by")
   createdAt        DateTime         @default(now()) @map("created_at")
   updatedAt        DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  leads  Lead[]
-  runs   DataSourceRun[]
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  leads     Lead[]
+  runs      DataSourceRun[]
 
   @@index([tenantId])
   @@index([isActive])
+  @@index([createdById])
   @@map("data_sources")
 }
 
@@ -341,16 +346,19 @@ model ChannelConfig {
   credentials Json        @db.Json
   settings    Json?       @db.Json
   isActive    Boolean     @default(true) @map("is_active")
+  createdById Int?        @map("created_by")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
   // Relations
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
   campaignSteps   CampaignStep[]
   contactAttempts ContactAttempt[]
 
   @@index([tenantId])
   @@index([channelType])
+  @@index([createdById])
   @@map("channel_configs")
 }
 

@@ -480,6 +480,7 @@ function ChannelList() {
                 <th>Name</th>
                 <th>Type</th>
                 <th>Provider</th>
+                <th>Created By</th>
                 <th>Status</th>
                 <th></th>
               </tr>
@@ -500,6 +501,7 @@ function ChannelList() {
                       </Badge>
                     </td>
                     <td>{channel.provider}</td>
+                    <td>{channel.createdBy?.name || '-'}</td>
                     <td>
                       <Badge
                         bg={channel.isActive ? 'success' : 'secondary'}

@@ -696,6 +696,7 @@ function CampaignList() {
                 <th>Name</th>
                 <th>Type</th>
                 <th>Status</th>
+                <th>Created By</th>
                 <th>Schedule / Progress</th>
                 <th>Recipients</th>
                 <th></th>
@@ -725,6 +726,7 @@ function CampaignList() {
                       {campaign.status}
                     </Badge>
                   </td>
+                  <td>{campaign.createdBy?.name || '-'}</td>
                   <td>
                     {campaign.status === 'DRAFT' && (
                       <span className="text-muted">Not started</span>
