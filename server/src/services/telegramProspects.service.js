@@ -443,7 +443,12 @@ class TelegramProspectsService {
     if (!client) {
       logger.info(`Telegram client not in memory, attempting reconnect for ${sessionKey}`);
       try {
-        await telegramService.reconnect(tenantId, apiId, apiHash);
+        // Need sessionString from credentials for reconnect
+        if (!credentials.sessionString) {
+          logger.error(`No sessionString in credentials for channel ${channelConfigId}`);
+          return { error: 'No session saved. Please reconnect Telegram.', repliesFound: 0, prospectsChecked: 0 };
+        }
+        await telegramService.reconnect(tenantId, apiId, apiHash, credentials.sessionString);
         client = telegramService.getClient(sessionKey);
         logger.info(`Telegram reconnected successfully for ${sessionKey}`);
       } catch (error) {

@@ -788,9 +788,9 @@ async function sendTelegram(tenantId, credentials, contact, lead, body) {
   const authStatus = await telegramService.isAuthorized(sessionKey);
   if (!authStatus.authorized) {
     // Try to reconnect if session exists
-    if (authStatus.hasSession && credentials.apiId && credentials.apiHash) {
+    if (credentials.sessionString && credentials.apiId && credentials.apiHash) {
       try {
-        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash);
+        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash, credentials.sessionString);
       } catch (error) {
         logger.error('Telegram reconnect failed', { error: error.message });
         return { success: false, error: 'Telegram not connected. Please reconnect.' };
@@ -836,9 +836,9 @@ async function sendTelegramToProspect(tenantId, credentials, prospect, body) {
   const authStatus = await telegramService.isAuthorized(sessionKey);
   if (!authStatus.authorized) {
     // Try to reconnect if session exists
-    if (authStatus.hasSession && credentials.apiId && credentials.apiHash) {
+    if (credentials.sessionString && credentials.apiId && credentials.apiHash) {
       try {
-        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash);
+        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash, credentials.sessionString);
       } catch (error) {
         logger.error('Telegram reconnect failed for prospect', { error: error.message });
         return { success: false, error: 'Telegram not connected. Please reconnect.' };
