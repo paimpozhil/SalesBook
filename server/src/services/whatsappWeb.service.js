@@ -502,6 +502,33 @@ class WhatsAppWebService {
   }
 
   /**
+   * Delete session folder permanently
+   * This removes all saved authentication data
+   */
+  async deleteSession(tenantId, channelId) {
+    const key = this.getKey(tenantId, channelId);
+    const sessionPath = path.join(__dirname, '../../.whatsapp_sessions', key);
+
+    // Ensure browser is disconnected first
+    await this.disconnect(tenantId, channelId);
+
+    // Delete session folder if it exists
+    if (fs.existsSync(sessionPath)) {
+      try {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        logger.info(`WhatsApp session deleted for ${key}`);
+        return true;
+      } catch (error) {
+        logger.error(`Error deleting WhatsApp session for ${key}:`, error);
+        throw new Error('Failed to delete session. Please try again.');
+      }
+    }
+
+    logger.info(`No session folder found for ${key}`);
+    return false;
+  }
+
+  /**
    * Register QR code callback
    */
   onQR(tenantId, channelId, callback) {

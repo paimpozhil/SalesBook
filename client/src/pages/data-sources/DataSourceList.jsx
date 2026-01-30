@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Card, Table, Button, Badge } from 'react-bootstrap';
-import { FaPlus, FaDatabase, FaTrash, FaFileAlt, FaFileCode } from 'react-icons/fa';
+import { Card, Table, Button, Badge, Dropdown, ButtonGroup } from 'react-bootstrap';
+import { FaPlus, FaDatabase, FaTrash, FaFileAlt, FaFileCode, FaTelegram } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import AddDataSourceModal from '../../components/data-sources/AddDataSourceModal';
+import TelegramImportModal from '../../components/data-sources/TelegramImportModal';
 
 const TYPE_COLORS = {
   PLAYWRIGHT: 'primary',
@@ -31,6 +32,7 @@ function DataSourceList() {
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showTelegramModal, setShowTelegramModal] = useState(false);
 
   useEffect(() => {
     fetchSources();
@@ -78,10 +80,23 @@ function DataSourceList() {
     <div>
       <div className="page-header">
         <h1>Data Sources</h1>
-        <Button variant="primary" onClick={() => setShowAddModal(true)}>
-          <FaPlus className="me-2" />
-          Import Data
-        </Button>
+        <Dropdown as={ButtonGroup}>
+          <Button variant="primary" onClick={() => setShowAddModal(true)}>
+            <FaPlus className="me-2" />
+            Import Data
+          </Button>
+          <Dropdown.Toggle split variant="primary" />
+          <Dropdown.Menu align="end">
+            <Dropdown.Item onClick={() => setShowAddModal(true)}>
+              <FaFileCode className="me-2" />
+              Import from JSON
+            </Dropdown.Item>
+            <Dropdown.Item onClick={() => setShowTelegramModal(true)}>
+              <FaTelegram className="me-2" />
+              Import from Telegram
+            </Dropdown.Item>
+          </Dropdown.Menu>
+        </Dropdown>
       </div>
 
       <Card>
@@ -176,6 +191,12 @@ function DataSourceList() {
       <AddDataSourceModal
         show={showAddModal}
         onHide={() => setShowAddModal(false)}
+        onSuccess={fetchSources}
+      />
+
+      <TelegramImportModal
+        show={showTelegramModal}
+        onHide={() => setShowTelegramModal(false)}
         onSuccess={fetchSources}
       />
     </div>

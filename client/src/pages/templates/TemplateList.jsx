@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Modal, Form } from 'react-bootstrap';
-import { FaPlus, FaFileAlt, FaEdit, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaSms } from 'react-icons/fa';
+import { FaPlus, FaFileAlt, FaEdit, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaSms, FaTelegram } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -9,6 +9,7 @@ const CHANNEL_TYPES = [
   { value: 'EMAIL_SMTP', label: 'Email', icon: FaEnvelope, color: 'primary' },
   { value: 'WHATSAPP_WEB', label: 'WhatsApp Web', icon: FaWhatsapp, color: 'success' },
   { value: 'WHATSAPP_BUSINESS', label: 'WhatsApp Business API', icon: FaWhatsapp, color: 'success' },
+  { value: 'TELEGRAM', label: 'Telegram', icon: FaTelegram, color: 'info' },
   { value: 'SMS', label: 'SMS', icon: FaSms, color: 'info' },
   { value: 'VOICE', label: 'Voice', icon: FaPhone, color: 'warning' },
 ];

@@ -86,10 +86,11 @@ router.post(
     body('type').isIn(['IMMEDIATE', 'SCHEDULED', 'SEQUENCE']),
     body('targetFilter').optional().isObject(),
     body('steps').optional().isArray(),
+    body('messageIntervalSeconds').optional().isInt({ min: 0 }).toInt(),
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { name, type, targetFilter, steps } = req.body;
+    const { name, type, targetFilter, steps, messageIntervalSeconds } = req.body;
     const tenantId = getTenantId(req);
 
     // If steps provided, fetch channel configs to get channelType
@@ -125,6 +126,7 @@ router.post(
         name,
         type,
         targetFilter,
+        messageIntervalSeconds: messageIntervalSeconds || 0,
         createdById: req.user.id,
         steps: stepsData,
       },
@@ -237,7 +239,7 @@ router.delete(
 
 /**
  * @route   POST /api/v1/campaigns/:id/recipients
- * @desc    Add recipients to campaign (by leadIds, contactIds, or filters)
+ * @desc    Add recipients to campaign (by leadIds, contactIds, filters, or prospectGroupIds)
  * @access  Private
  */
 router.post(
@@ -249,10 +251,11 @@ router.post(
     body('contactIds').optional().isArray(),
     body('filters').optional().isObject(),
     body('primaryOnly').optional().isBoolean(),
+    body('prospectGroupIds').optional().isArray(),
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { leadIds, contactIds, filters, primaryOnly = false } = req.body;
+    const { leadIds, contactIds, filters, primaryOnly = false, prospectGroupIds } = req.body;
     const tenantId = getTenantId(req);
 
     const campaign = await prisma.campaign.findFirst({
@@ -263,6 +266,52 @@ router.post(
 
     if (campaign.status !== 'DRAFT') {
       throw AppError.badRequest('Can only add recipients to draft campaigns');
+    }
+
+    // If prospectGroupIds provided, add prospects from those groups
+    if (prospectGroupIds?.length) {
+      // Get prospects from the selected groups
+      const prospects = await prisma.telegramProspect.findMany({
+        where: {
+          tenantId,
+          groupId: { in: prospectGroupIds },
+          status: { in: ['PENDING', 'MESSAGED'] }, // Only add prospects that haven't been converted
+        },
+        include: {
+          group: true,
+        },
+      });
+
+      if (prospects.length === 0) {
+        return success(res, { message: 'No eligible prospects found in selected groups', count: 0 });
+      }
+
+      // Create campaign recipients for each prospect
+      const recipientData = prospects.map((prospect) => ({
+        campaignId: campaign.id,
+        prospectId: prospect.id,
+        status: 'PENDING',
+        currentStep: 1,
+        metadata: {
+          type: 'telegram_prospect',
+          telegramUserId: prospect.telegramUserId,
+          prospectName: `${prospect.firstName || ''} ${prospect.lastName || ''}`.trim() || prospect.username || 'Unknown',
+          groupId: prospect.groupId,
+          groupName: prospect.group?.name,
+        },
+      }));
+
+      // Use createMany with skipDuplicates
+      const created = await prisma.campaignRecipient.createMany({
+        data: recipientData,
+        skipDuplicates: true,
+      });
+
+      return success(res, {
+        message: `Added ${created.count} prospect recipients from ${prospectGroupIds.length} group(s)`,
+        count: created.count,
+        totalProspects: prospects.length,
+      });
     }
 
     // If contactIds provided, add those specific contacts
@@ -538,26 +587,39 @@ router.post(
       throw AppError.badRequest('Campaign must have at least one recipient. Add recipients first.');
     }
 
-    // Calculate nextActionAt based on campaign type
-    let nextActionAt = new Date();
+    // Calculate base nextActionAt based on campaign type
+    let baseNextActionAt = new Date();
 
     if (campaign.type === 'SCHEDULED' && scheduledAt) {
-      nextActionAt = new Date(scheduledAt);
+      baseNextActionAt = new Date(scheduledAt);
     } else if (campaign.type === 'IMMEDIATE') {
-      nextActionAt = new Date(); // Now
+      baseNextActionAt = new Date(); // Now
     }
     // For SEQUENCE, first step starts immediately, delays apply to subsequent steps
 
-    // Update all pending recipients with nextActionAt
-    await prisma.campaignRecipient.updateMany({
+    // Get pending recipients to stagger
+    const pendingRecipientsToUpdate = await prisma.campaignRecipient.findMany({
       where: {
         campaignId: campaign.id,
         status: 'PENDING',
       },
-      data: {
-        nextActionAt,
-      },
+      select: { id: true },
     });
+
+    // Update recipients with staggered nextActionAt based on messageIntervalSeconds
+    const intervalMs = (campaign.messageIntervalSeconds || 0) * 1000;
+
+    for (let i = 0; i < pendingRecipientsToUpdate.length; i++) {
+      const recipient = pendingRecipientsToUpdate[i];
+      const staggeredTime = new Date(baseNextActionAt.getTime() + (i * intervalMs));
+
+      await prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { nextActionAt: staggeredTime },
+      });
+    }
+
+    logger.info(`Staggered ${pendingRecipientsToUpdate.length} recipients with ${campaign.messageIntervalSeconds || 0}s interval`);
 
     const updateData = {
       status: 'ACTIVE',
@@ -581,7 +643,7 @@ router.post(
         campaignId: campaign.id,
         status: 'PENDING',
       },
-      select: { id: true },
+      select: { id: true, nextActionAt: true },
     });
 
     if (pendingRecipients.length > 0) {
@@ -595,7 +657,7 @@ router.post(
         }, {
           tenantId: campaign.tenantId,
           priority: 0,
-          scheduledAt: nextActionAt, // Respect scheduled time if set
+          scheduledAt: recipient.nextActionAt, // Respect scheduled time for each recipient
         });
       }
 
@@ -675,7 +737,17 @@ router.get(
         where,
         include: {
           lead: { select: { id: true, companyName: true } },
-          contact: { select: { id: true, name: true, email: true } },
+          contact: { select: { id: true, name: true, email: true, phone: true } },
+          prospect: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              username: true,
+              telegramUserId: true,
+              group: { select: { name: true } },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -684,20 +756,43 @@ router.get(
       prisma.campaignRecipient.count({ where }),
     ]);
 
+    // For prospect recipients, enrich with proper data
+    for (const recipient of recipients) {
+      if (recipient.prospect) {
+        recipient.isProspect = true;
+        recipient.prospectName = `${recipient.prospect.firstName || ''} ${recipient.prospect.lastName || ''}`.trim() || recipient.prospect.username || 'Unknown';
+        recipient.telegramUserId = recipient.prospect.telegramUserId;
+        recipient.prospectGroupName = recipient.prospect.group?.name;
+      } else if (!recipient.lead && !recipient.contact && recipient.metadata?.type === 'telegram_prospect') {
+        // Fallback to metadata for legacy records
+        recipient.isProspect = true;
+        recipient.prospectName = recipient.metadata.prospectName;
+        recipient.telegramUserId = recipient.metadata.telegramUserId;
+        recipient.prospectGroupName = recipient.metadata.groupName;
+      }
+    }
+
     // Fetch contact attempts for these recipients to show step history
-    const recipientIds = recipients.map((r) => ({ contactId: r.contactId, leadId: r.leadId }));
-    const contactAttempts = await prisma.contactAttempt.findMany({
-      where: {
-        campaignId: req.params.id,
-        OR: recipientIds,
-      },
-      include: {
-        campaignStep: {
-          select: { id: true, stepOrder: true },
+    // Only include recipients that have contactId and leadId (not prospect recipients)
+    const recipientIds = recipients
+      .filter((r) => r.contactId && r.leadId)
+      .map((r) => ({ contactId: r.contactId, leadId: r.leadId }));
+
+    let contactAttempts = [];
+    if (recipientIds.length > 0) {
+      contactAttempts = await prisma.contactAttempt.findMany({
+        where: {
+          campaignId: req.params.id,
+          OR: recipientIds,
         },
-      },
-      orderBy: { sentAt: 'asc' },
-    });
+        include: {
+          campaignStep: {
+            select: { id: true, stepOrder: true },
+          },
+        },
+        orderBy: { sentAt: 'asc' },
+      });
+    }
 
     // Group attempts by contactId
     const attemptsByContact = {};

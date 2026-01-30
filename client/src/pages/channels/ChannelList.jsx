@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Modal, Form, Row, Col, Alert } from 'react-bootstrap';
-import { FaPlus, FaEnvelope, FaSms, FaWhatsapp, FaTelegram, FaPhone, FaEdit, FaTrash, FaArrowLeft, FaInbox, FaSync, FaQrcode } from 'react-icons/fa';
+import { FaPlus, FaEnvelope, FaSms, FaWhatsapp, FaTelegram, FaPhone, FaEdit, FaTrash, FaArrowLeft, FaInbox, FaSync, FaQrcode, FaCheckCircle } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import WhatsAppWebConnect from '../../components/channels/WhatsAppWebConnect';
+import TelegramConnect from '../../components/channels/TelegramConnect';
 
 const CHANNEL_TYPES = {
   EMAIL_SMTP: {
@@ -71,12 +72,14 @@ const CHANNEL_TYPES = {
     ],
   },
   TELEGRAM: {
-    label: 'Telegram Bot',
+    label: 'Telegram',
     icon: FaTelegram,
     color: 'info',
     provider: 'telegram',
+    description: 'Connect using Telegram API credentials - supports prospects and campaigns',
     fields: [
-      { name: 'botToken', label: 'Bot Token', type: 'password', required: true },
+      { name: 'apiId', label: 'API ID', placeholder: 'e.g., 12345678', required: true },
+      { name: 'apiHash', label: 'API Hash', placeholder: 'e.g., a1b2c3d4e5f6...', required: true },
     ],
   },
   VOICE: {
@@ -111,14 +114,43 @@ function ChannelList() {
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [whatsAppChannel, setWhatsAppChannel] = useState(null);
 
+  // Telegram connection modal
+  const [showTelegramModal, setShowTelegramModal] = useState(false);
+  const [telegramChannel, setTelegramChannel] = useState(null);
+
+  // Telegram connection status cache
+  const [telegramStatus, setTelegramStatus] = useState({}); // channelId -> 'CONNECTED' | 'DISCONNECTED'
+
   useEffect(() => {
     fetchChannels();
   }, []);
 
+  // Fetch Telegram status for all Telegram channels
+  const fetchTelegramStatuses = async (channelList) => {
+    const telegramChannels = channelList.filter(c => c.channelType === 'TELEGRAM');
+    const statuses = {};
+
+    await Promise.all(
+      telegramChannels.map(async (channel) => {
+        try {
+          const response = await api.get(`/channels/${channel.id}/telegram/status`);
+          statuses[channel.id] = response.data.data.status;
+        } catch {
+          statuses[channel.id] = 'DISCONNECTED';
+        }
+      })
+    );
+
+    setTelegramStatus(statuses);
+  };
+
   const fetchChannels = async () => {
     try {
       const response = await api.get('/channels');
-      setChannels(response.data.data);
+      const channelList = response.data.data;
+      setChannels(channelList);
+      // Fetch Telegram statuses in background
+      fetchTelegramStatuses(channelList);
     } catch (error) {
       console.error('Failed to fetch channels:', error);
     } finally {
@@ -330,6 +362,18 @@ function ChannelList() {
     setWhatsAppChannel(null);
   };
 
+  const handleTelegramConnect = (channel) => {
+    setTelegramChannel(channel);
+    setShowTelegramModal(true);
+  };
+
+  const handleTelegramModalClose = () => {
+    setShowTelegramModal(false);
+    setTelegramChannel(null);
+    // Refresh status after modal closes
+    fetchTelegramStatuses(channels);
+  };
+
   const renderCredentialsForm = () => {
     const config = CHANNEL_TYPES[selectedType];
     if (!config) return null;
@@ -522,7 +566,25 @@ function ChannelList() {
                           <FaQrcode className="me-1" /> Connect
                         </Button>
                       )}
-                      {channel.channelType !== 'WHATSAPP_WEB' && (
+                      {channel.channelType === 'TELEGRAM' && (
+                        <Button
+                          variant={telegramStatus[channel.id] === 'CONNECTED' ? 'success' : 'outline-info'}
+                          size="sm"
+                          className="me-1"
+                          onClick={() => handleTelegramConnect(channel)}
+                        >
+                          {telegramStatus[channel.id] === 'CONNECTED' ? (
+                            <>
+                              <FaCheckCircle className="me-1" /> Connected
+                            </>
+                          ) : (
+                            <>
+                              <FaTelegram className="me-1" /> Connect
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      {channel.channelType !== 'WHATSAPP_WEB' && channel.channelType !== 'TELEGRAM' && (
                         <Button
                           variant="outline-primary"
                           size="sm"
@@ -643,10 +705,12 @@ function ChannelList() {
             <WhatsAppWebConnect
               channelId={whatsAppChannel.id}
               onConnected={() => {
-                toast.success('WhatsApp Web connected successfully!');
+                // Refresh channel list to update status
+                fetchChannels();
               }}
               onDisconnected={() => {
-                toast.info('WhatsApp Web disconnected');
+                // Refresh channel list to update status
+                fetchChannels();
               }}
             />
           )}
@@ -662,6 +726,43 @@ function ChannelList() {
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={handleWhatsAppModalClose}>
+            Close
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* Telegram Connection Modal */}
+      <Modal show={showTelegramModal} onHide={handleTelegramModalClose} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <FaTelegram className="me-2 text-info" />
+            Connect Telegram - {telegramChannel?.name}
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {telegramChannel && (
+            <TelegramConnect
+              channelId={telegramChannel.id}
+              onConnected={() => {
+                fetchChannels();
+              }}
+              onDisconnected={() => {
+                fetchChannels();
+              }}
+            />
+          )}
+          <Alert variant="info" className="mt-3">
+            <strong>How to get Telegram API credentials:</strong>
+            <ol className="mb-0 mt-2">
+              <li>Go to <a href="https://my.telegram.org/auth" target="_blank" rel="noopener noreferrer">my.telegram.org</a></li>
+              <li>Log in with your phone number</li>
+              <li>Go to "API development tools"</li>
+              <li>Create a new application to get API ID and Hash</li>
+            </ol>
+          </Alert>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleTelegramModalClose}>
             Close
           </Button>
         </Modal.Footer>

@@ -23,6 +23,8 @@ import ChannelList from './pages/channels/ChannelList';
 import Analytics from './pages/analytics/Analytics';
 import UserList from './pages/settings/UserList';
 import Settings from './pages/settings/Settings';
+import ProspectGroupList from './pages/prospects/ProspectGroupList';
+import ProspectGroupDetail from './pages/prospects/ProspectGroupDetail';
 
 // Loading component
 import LoadingSpinner from './components/common/LoadingSpinner';
@@ -109,6 +111,10 @@ function App() {
 
         {/* Channels */}
         <Route path="channels" element={<ChannelList />} />
+
+        {/* Prospects */}
+        <Route path="prospects" element={<ProspectGroupList />} />
+        <Route path="prospects/:groupId" element={<ProspectGroupDetail />} />
 
         {/* Analytics */}
         <Route path="analytics" element={<Analytics />} />

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Modal, Form, Row, Col, ListGroup, Alert, ProgressBar, InputGroup } from 'react-bootstrap';
-import { FaPlus, FaBullhorn, FaPlay, FaPause, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaUsers, FaUserPlus, FaClock, FaRocket, FaListOl, FaEye, FaSync, FaCheckCircle, FaTimesCircle, FaSpinner, FaFilter, FaSearch, FaBolt } from 'react-icons/fa';
+import { FaPlus, FaBullhorn, FaPlay, FaPause, FaTrash, FaEnvelope, FaWhatsapp, FaPhone, FaUsers, FaUserPlus, FaClock, FaRocket, FaListOl, FaEye, FaSync, FaCheckCircle, FaTimesCircle, FaSpinner, FaFilter, FaSearch, FaBolt, FaTelegram } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -40,12 +40,15 @@ const CHANNEL_ICONS = {
   EMAIL_SMTP: FaEnvelope,
   EMAIL_API: FaEnvelope,
   WHATSAPP_BUSINESS: FaWhatsapp,
+  WHATSAPP_WEB: FaWhatsapp,
+  TELEGRAM: FaTelegram,
   VOICE: FaPhone,
 };
 
 const EMPTY_FORM = {
   name: '',
   type: 'IMMEDIATE',
+  messageIntervalMinutes: 0, // Delay between sending to each recipient (in minutes)
 };
 
 const EMPTY_STEP = {
@@ -92,8 +95,13 @@ function CampaignList() {
   // Existing recipients state
   const [existingRecipients, setExistingRecipients] = useState([]);
   const [loadingExisting, setLoadingExisting] = useState(false);
-  const [recipientModalTab, setRecipientModalTab] = useState('add'); // 'add' or 'existing'
+  const [recipientModalTab, setRecipientModalTab] = useState('add'); // 'add', 'existing', or 'prospects'
   const [primaryOnly, setPrimaryOnly] = useState(true); // Default to primary contacts only
+
+  // Prospect groups state (for Telegram campaigns)
+  const [prospectGroups, setProspectGroups] = useState([]);
+  const [selectedProspectGroups, setSelectedProspectGroups] = useState([]);
+  const [loadingProspects, setLoadingProspects] = useState(false);
 
   // Start campaign modal state
   const [showStartModal, setShowStartModal] = useState(false);
@@ -215,6 +223,32 @@ function CampaignList() {
     }
   };
 
+  const fetchProspectGroups = async () => {
+    setLoadingProspects(true);
+    try {
+      const response = await api.get('/telegram-prospects/groups');
+      setProspectGroups(response.data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch prospect groups:', error);
+    } finally {
+      setLoadingProspects(false);
+    }
+  };
+
+  // Check if campaign uses TELEGRAM channel
+  const campaignUsesTelegram = (campaign) => {
+    if (!campaign?.steps) return false;
+    return campaign.steps.some(step => {
+      // Check channelConfig from step (when full campaign data is loaded)
+      if (step.channelConfig?.channelType === 'TELEGRAM') return true;
+      // Fallback: check channelType directly on step
+      if (step.channelType === 'TELEGRAM') return true;
+      // Fallback: look up in channels list
+      const channel = channels.find(ch => ch.id === step.channelConfigId);
+      return channel?.channelType === 'TELEGRAM';
+    });
+  };
+
   const handleRemoveRecipient = async (recipientId) => {
     if (!selectedCampaign) return;
     try {
@@ -242,9 +276,9 @@ function CampaignList() {
     }
   };
 
-  const openRecipientsModal = (campaign) => {
-    setSelectedCampaign(campaign);
+  const openRecipientsModal = async (campaign) => {
     setSelectedLeads([]);
+    setSelectedProspectGroups([]);
     setRecipientFilters({
       status: [],
       industryIds: [],
@@ -258,6 +292,22 @@ function CampaignList() {
     fetchIndustries();
     fetchDataSources();
     fetchExistingRecipients(campaign.id);
+
+    // Fetch full campaign details to get steps
+    try {
+      const response = await api.get(`/campaigns/${campaign.id}`);
+      const fullCampaign = response.data.data;
+      setSelectedCampaign(fullCampaign);
+
+      // Fetch prospect groups for TELEGRAM campaigns
+      if (campaignUsesTelegram(fullCampaign)) {
+        fetchProspectGroups();
+      }
+    } catch (error) {
+      console.error('Failed to fetch campaign details:', error);
+      setSelectedCampaign(campaign); // Fallback to partial data
+    }
+
     setShowRecipientsModal(true);
   };
 
@@ -265,6 +315,8 @@ function CampaignList() {
     setShowRecipientsModal(false);
     setSelectedCampaign(null);
     setSelectedLeads([]);
+    setSelectedProspectGroups([]);
+    setProspectGroups([]);
     setExistingRecipients([]);
     setRecipientModalTab('add');
     setRecipientFilters({
@@ -368,6 +420,31 @@ function CampaignList() {
     }
   };
 
+  const handleAddProspectRecipients = async () => {
+    if (selectedProspectGroups.length === 0) {
+      toast.error('Please select at least one prospect group');
+      return;
+    }
+
+    setAddingRecipients(true);
+    try {
+      const response = await api.post(`/campaigns/${selectedCampaign.id}/recipients`, {
+        prospectGroupIds: selectedProspectGroups,
+      });
+      toast.success(response.data.data.message || 'Prospect recipients added');
+      // Refresh existing recipients and switch to that tab
+      fetchExistingRecipients(selectedCampaign.id);
+      setRecipientModalTab('existing');
+      setSelectedProspectGroups([]);
+      fetchCampaigns();
+    } catch (error) {
+      console.error('Failed to add prospect recipients:', error);
+      toast.error(error.response?.data?.error?.message || 'Failed to add prospect recipients');
+    } finally {
+      setAddingRecipients(false);
+    }
+  };
+
   const openModal = () => {
     setFormData(EMPTY_FORM);
     setSteps([{ ...EMPTY_STEP }]);
@@ -433,6 +510,7 @@ function CampaignList() {
       await api.post('/campaigns', {
         name: formData.name,
         type: formData.type,
+        messageIntervalSeconds: (parseInt(formData.messageIntervalMinutes) || 0) * 60,
         steps: validSteps.map((step) => ({
           channelConfigId: parseInt(step.channelConfigId),
           templateId: parseInt(step.templateId),
@@ -925,6 +1003,27 @@ function CampaignList() {
               </div>
             </Form.Group>
 
+            <Form.Group className="mb-4">
+              <Form.Label>
+                <FaClock className="me-1" />
+                Message Interval (delay between each recipient)
+              </Form.Label>
+              <InputGroup>
+                <Form.Control
+                  type="number"
+                  min="0"
+                  value={formData.messageIntervalMinutes}
+                  onChange={(e) => setFormData({ ...formData, messageIntervalMinutes: e.target.value })}
+                  placeholder="0"
+                />
+                <InputGroup.Text>minutes</InputGroup.Text>
+              </InputGroup>
+              <Form.Text className="text-muted">
+                Time to wait between sending messages to each recipient. Set to 0 for no delay.
+                Recommended: 5+ minutes for Telegram/WhatsApp to avoid rate limits.
+              </Form.Text>
+            </Form.Group>
+
             <hr />
             <div className="d-flex justify-content-between align-items-center mb-3">
               <h6 className="mb-0">Campaign Steps</h6>
@@ -1107,8 +1206,19 @@ function CampaignList() {
               variant={recipientModalTab === 'add' ? 'success' : 'outline-success'}
               onClick={() => setRecipientModalTab('add')}
             >
-              <FaUserPlus className="me-1" /> Add More
+              <FaUserPlus className="me-1" /> Add from Leads
             </Button>
+            {campaignUsesTelegram(selectedCampaign) && (
+              <Button
+                variant={recipientModalTab === 'prospects' ? 'info' : 'outline-info'}
+                onClick={() => setRecipientModalTab('prospects')}
+              >
+                <FaTelegram className="me-1" /> Add from Prospects
+                {prospectGroups.length > 0 && (
+                  <Badge bg="light" text="dark" className="ms-2">{prospectGroups.length} groups</Badge>
+                )}
+              </Button>
+            )}
           </div>
 
           {recipientModalTab === 'existing' ? (
@@ -1138,9 +1248,9 @@ function CampaignList() {
                     <Table size="sm" hover>
                       <thead className="table-light sticky-top">
                         <tr>
-                          <th>Company</th>
-                          <th>Contact</th>
-                          <th>Email</th>
+                          <th>Company / Group</th>
+                          <th>Contact / Prospect</th>
+                          <th>Email / Channel</th>
                           <th>Status</th>
                           <th></th>
                         </tr>
@@ -1148,9 +1258,35 @@ function CampaignList() {
                       <tbody>
                         {existingRecipients.map((recipient) => (
                           <tr key={recipient.id}>
-                            <td>{recipient.lead?.companyName || '-'}</td>
-                            <td>{recipient.contact?.name || '-'}</td>
-                            <td className="small text-muted">{recipient.contact?.email || '-'}</td>
+                            <td>
+                              {recipient.isProspect ? (
+                                <Badge bg="info" className="me-1">Prospect</Badge>
+                              ) : (
+                                recipient.lead?.companyName || '-'
+                              )}
+                              {recipient.isProspect && recipient.prospectGroupName && (
+                                <small className="text-muted">{recipient.prospectGroupName}</small>
+                              )}
+                            </td>
+                            <td>
+                              {recipient.isProspect ? (
+                                <>
+                                  {recipient.prospectName || '-'}
+                                  {recipient.telegramUserId && (
+                                    <small className="text-muted d-block">@{recipient.telegramUserId}</small>
+                                  )}
+                                </>
+                              ) : (
+                                recipient.contact?.name || '-'
+                              )}
+                            </td>
+                            <td className="small text-muted">
+                              {recipient.isProspect ? (
+                                <span><FaTelegram className="me-1" />Telegram</span>
+                              ) : (
+                                recipient.contact?.email || '-'
+                              )}
+                            </td>
                             <td>
                               <Badge
                                 bg={
@@ -1456,6 +1592,94 @@ function CampaignList() {
           )}
             </>
           )}
+
+          {/* Prospects Tab - for TELEGRAM campaigns */}
+          {recipientModalTab === 'prospects' && (
+            <>
+              <Alert variant="info" className="mb-3">
+                <FaTelegram className="me-2" />
+                Select Telegram prospect groups to add as campaign recipients.
+                All prospects in the selected groups will be added to the campaign.
+              </Alert>
+
+              {loadingProspects ? (
+                <div className="text-center py-4">
+                  <FaSpinner className="fa-spin me-2" /> Loading prospect groups...
+                </div>
+              ) : prospectGroups.length === 0 ? (
+                <Alert variant="warning">
+                  No prospect groups found. Import prospects from Telegram groups first in the Prospects section.
+                </Alert>
+              ) : (
+                <>
+                  <div className="d-flex justify-content-between mb-3">
+                    <Button
+                      variant="link"
+                      onClick={() => {
+                        if (selectedProspectGroups.length === prospectGroups.length) {
+                          setSelectedProspectGroups([]);
+                        } else {
+                          setSelectedProspectGroups(prospectGroups.map(g => g.id));
+                        }
+                      }}
+                      className="p-0"
+                    >
+                      {selectedProspectGroups.length === prospectGroups.length ? 'Deselect All' : 'Select All'}
+                    </Button>
+                    <span className="text-muted">
+                      {selectedProspectGroups.length} of {prospectGroups.length} groups selected
+                    </span>
+                  </div>
+
+                  <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                    <ListGroup>
+                      {prospectGroups.map((group) => (
+                        <ListGroup.Item
+                          key={group.id}
+                          action
+                          active={selectedProspectGroups.includes(group.id)}
+                          onClick={() => {
+                            setSelectedProspectGroups(prev =>
+                              prev.includes(group.id)
+                                ? prev.filter(id => id !== group.id)
+                                : [...prev, group.id]
+                            );
+                          }}
+                          className="d-flex justify-content-between align-items-center"
+                        >
+                          <div>
+                            <strong>{group.name}</strong>
+                            {group.telegramGroupName && (
+                              <small className="text-muted ms-2">
+                                (from: {group.telegramGroupName})
+                              </small>
+                            )}
+                          </div>
+                          <div>
+                            <Badge bg={selectedProspectGroups.includes(group.id) ? 'light' : 'info'} text={selectedProspectGroups.includes(group.id) ? 'dark' : 'white'} className="me-2">
+                              {group.prospectCount || group._count?.prospects || 0} prospects
+                            </Badge>
+                          </div>
+                        </ListGroup.Item>
+                      ))}
+                    </ListGroup>
+                  </div>
+
+                  {/* Summary */}
+                  {selectedProspectGroups.length > 0 && (
+                    <Alert variant="success" className="mt-3 mb-0">
+                      <strong>
+                        {selectedProspectGroups.reduce((total, groupId) => {
+                          const group = prospectGroups.find(g => g.id === groupId);
+                          return total + (group?.prospectCount || group?._count?.prospects || 0);
+                        }, 0)}
+                      </strong> prospects from {selectedProspectGroups.length} group(s) will be added.
+                    </Alert>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={closeRecipientsModal}>
@@ -1468,6 +1692,15 @@ function CampaignList() {
               disabled={addingRecipients || selectedLeads.length === 0}
             >
               {addingRecipients ? 'Adding...' : `Add ${selectedLeads.length} Lead(s)`}
+            </Button>
+          )}
+          {recipientModalTab === 'prospects' && selectedProspectGroups.length > 0 && (
+            <Button
+              variant="info"
+              onClick={() => handleAddProspectRecipients()}
+              disabled={addingRecipients}
+            >
+              {addingRecipients ? 'Adding...' : `Add ${selectedProspectGroups.length} Group(s)`}
             </Button>
           )}
         </Modal.Footer>
@@ -1789,8 +2022,8 @@ function CampaignList() {
                     <Table size="sm" hover className="mb-0">
                       <thead>
                         <tr>
-                          <th>Contact</th>
-                          <th>Company</th>
+                          <th>Contact / Prospect</th>
+                          <th>Company / Group</th>
                           <th>Status</th>
                           <th>Step History</th>
                           <th>Next Action</th>
@@ -1800,11 +2033,30 @@ function CampaignList() {
                         {campaignRecipients.map((recipient) => (
                           <tr key={recipient.id}>
                             <td>
-                              <strong>{recipient.contact?.name || 'Unknown'}</strong>
-                              <br />
-                              <small className="text-muted">{recipient.contact?.email}</small>
+                              {recipient.isProspect ? (
+                                <>
+                                  <Badge bg="info" className="me-1">P</Badge>
+                                  <strong>{recipient.prospectName || 'Unknown'}</strong>
+                                  <br />
+                                  <small className="text-muted">
+                                    <FaTelegram className="me-1" />Telegram
+                                  </small>
+                                </>
+                              ) : (
+                                <>
+                                  <strong>{recipient.contact?.name || 'Unknown'}</strong>
+                                  <br />
+                                  <small className="text-muted">{recipient.contact?.email}</small>
+                                </>
+                              )}
                             </td>
-                            <td>{recipient.lead?.companyName || '-'}</td>
+                            <td>
+                              {recipient.isProspect ? (
+                                recipient.prospectGroupName || '-'
+                              ) : (
+                                recipient.lead?.companyName || '-'
+                              )}
+                            </td>
                             <td>{getRecipientStatusBadge(recipient.status)}</td>
                             <td>
                               {recipient.stepHistory?.length > 0 ? (

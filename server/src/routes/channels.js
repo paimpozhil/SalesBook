@@ -13,6 +13,7 @@ const { success, paginated, noContent, created } = require('../utils/response');
 const logger = require('../utils/logger');
 const imapPollerService = require('../services/imapPoller.service');
 const whatsappWebService = require('../services/whatsappWeb.service');
+const telegramService = require('../services/telegram.service');
 
 const router = express.Router();
 
@@ -1053,6 +1054,34 @@ router.post(
 );
 
 /**
+ * @route   DELETE /api/v1/channels/:id/whatsapp-web/session
+ * @desc    Disconnect and delete WhatsApp Web session completely
+ * @access  Private (Admin)
+ */
+router.delete(
+  '/:id/whatsapp-web/session',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const tenantId = getTenantId(req);
+
+    // Disconnect first
+    await whatsappWebService.disconnect(tenantId, channel.id);
+
+    // Delete session files
+    await whatsappWebService.deleteSession(tenantId, channel.id);
+
+    return success(res, { message: 'WhatsApp Web session deleted successfully' });
+  })
+);
+
+/**
  * @route   POST /api/v1/channels/:id/whatsapp-web/send
  * @desc    Send WhatsApp message via WhatsApp Web
  * @access  Private
@@ -1103,6 +1132,435 @@ router.post(
     } else {
       throw AppError.badRequest(`Failed to send message: ${result.error}`);
     }
+  })
+);
+
+// ===========================================
+// TELEGRAM Channel Routes
+// ===========================================
+
+/**
+ * @route   POST /api/v1/channels/:id/telegram/connect
+ * @desc    Start Telegram authentication (send code to phone)
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/telegram/connect',
+  requirePermission('channels:update'),
+  [
+    param('id').isInt().toInt(),
+    body('phoneNumber').notEmpty().withMessage('Phone number is required'),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { phoneNumber } = req.body;
+
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'TELEGRAM') {
+      throw AppError.badRequest('Channel is not Telegram type');
+    }
+
+    const tenantId = getTenantId(req);
+
+    // Get credentials (apiId, apiHash)
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      } else if (channel.credentials && typeof channel.credentials === 'object') {
+        credentials = channel.credentials;
+      } else {
+        throw new Error('No credentials found');
+      }
+    } catch (error) {
+      throw AppError.badRequest('Failed to decrypt channel credentials');
+    }
+
+    if (!credentials.apiId || !credentials.apiHash) {
+      throw AppError.badRequest('API ID and API Hash are required in channel credentials');
+    }
+
+    const result = await telegramService.startAuth(
+      tenantId,
+      credentials.apiId,
+      credentials.apiHash,
+      phoneNumber,
+      credentials.sessionString // Pass saved session from DB
+    );
+
+    if (result.status === 'authorized') {
+      // Save phoneNumber and sessionString to credentials
+      const updatedCredentials = {
+        ...credentials,
+        phoneNumber,
+        sessionString: result.sessionString,
+      };
+      await prisma.channelConfig.update({
+        where: { id: channel.id },
+        data: {
+          credentials: { encrypted: encrypt(JSON.stringify(updatedCredentials)) },
+        },
+      });
+
+      return success(res, {
+        status: 'connected',
+        sessionKey: result.sessionKey,
+        message: 'Already authenticated',
+      });
+    }
+
+    // Save phoneNumber to credentials (session will be saved after code verification)
+    const updatedCredentials = { ...credentials, phoneNumber };
+    await prisma.channelConfig.update({
+      where: { id: channel.id },
+      data: {
+        credentials: { encrypted: encrypt(JSON.stringify(updatedCredentials)) },
+      },
+    });
+
+    return success(res, {
+      status: 'code_required',
+      sessionKey: result.sessionKey,
+      message: 'Verification code sent to your Telegram app',
+    });
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/telegram/verify-code
+ * @desc    Verify the code sent to Telegram
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/telegram/verify-code',
+  requirePermission('channels:update'),
+  [
+    param('id').isInt().toInt(),
+    body('sessionKey').notEmpty().withMessage('Session key is required'),
+    body('code').notEmpty().withMessage('Verification code is required'),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { sessionKey, code } = req.body;
+
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const result = await telegramService.verifyCode(sessionKey, code);
+
+    if (result.status === 'password_required') {
+      return success(res, {
+        status: 'password_required',
+        sessionKey: result.sessionKey,
+        message: 'Two-factor authentication required. Please enter your password.',
+      });
+    }
+
+    // Save sessionString to credentials in DB
+    if (result.sessionString) {
+      let credentials = {};
+      try {
+        const encryptedData = channel.credentials?.encrypted;
+        if (encryptedData) {
+          credentials = JSON.parse(decrypt(encryptedData));
+        }
+      } catch (e) {
+        credentials = channel.credentials || {};
+      }
+
+      credentials.sessionString = result.sessionString;
+      await prisma.channelConfig.update({
+        where: { id: channel.id },
+        data: {
+          credentials: { encrypted: encrypt(JSON.stringify(credentials)) },
+        },
+      });
+    }
+
+    return success(res, {
+      status: 'connected',
+      sessionKey: result.sessionKey,
+      message: 'Authentication successful',
+    });
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/telegram/verify-password
+ * @desc    Verify 2FA password
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/telegram/verify-password',
+  requirePermission('channels:update'),
+  [
+    param('id').isInt().toInt(),
+    body('sessionKey').notEmpty().withMessage('Session key is required'),
+    body('password').notEmpty().withMessage('Password is required'),
+    validate,
+  ],
+  asyncHandler(async (req, res) => {
+    const { sessionKey, password } = req.body;
+
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const result = await telegramService.verifyPassword(sessionKey, password);
+
+    // Save sessionString to credentials in DB
+    if (result.sessionString) {
+      let credentials = {};
+      try {
+        const encryptedData = channel.credentials?.encrypted;
+        if (encryptedData) {
+          credentials = JSON.parse(decrypt(encryptedData));
+        }
+      } catch (e) {
+        credentials = channel.credentials || {};
+      }
+
+      credentials.sessionString = result.sessionString;
+      await prisma.channelConfig.update({
+        where: { id: channel.id },
+        data: {
+          credentials: { encrypted: encrypt(JSON.stringify(credentials)) },
+        },
+      });
+    }
+
+    return success(res, {
+      status: 'connected',
+      sessionKey: result.sessionKey,
+      message: 'Authentication successful',
+    });
+  })
+);
+
+/**
+ * @route   GET /api/v1/channels/:id/telegram/status
+ * @desc    Check Telegram connection status
+ * @access  Private
+ */
+router.get(
+  '/:id/telegram/status',
+  requirePermission('channels:read'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'TELEGRAM') {
+      throw AppError.badRequest('Channel is not Telegram type');
+    }
+
+    const tenantId = getTenantId(req);
+
+    // Get credentials
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      } else if (channel.credentials && typeof channel.credentials === 'object') {
+        credentials = channel.credentials;
+      }
+    } catch (error) {
+      return success(res, { status: 'DISCONNECTED', hasCredentials: false });
+    }
+
+    if (!credentials?.apiId) {
+      return success(res, { status: 'DISCONNECTED', hasCredentials: false });
+    }
+
+    const hasStoredSession = !!credentials.sessionString;
+    const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+    const status = await telegramService.isAuthorized(sessionKey, hasStoredSession);
+
+    if (status.authorized) {
+      return success(res, {
+        status: 'CONNECTED',
+        sessionKey,
+        hasCredentials: true,
+        hasPhoneNumber: !!credentials.phoneNumber,
+      });
+    }
+
+    if (status.hasSession && credentials.sessionString) {
+      // Session exists in DB but not connected - try to reconnect
+      try {
+        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash, credentials.sessionString);
+        return success(res, {
+          status: 'CONNECTED',
+          sessionKey,
+          hasCredentials: true,
+          hasPhoneNumber: !!credentials.phoneNumber,
+        });
+      } catch (error) {
+        logger.warn(`Telegram auto-reconnect failed for channel ${channel.id}: ${error.message}`);
+        return success(res, {
+          status: 'DISCONNECTED',
+          hasSession: true,
+          hasCredentials: true,
+          hasPhoneNumber: !!credentials.phoneNumber,
+          message: 'Session expired. Please reconnect.',
+        });
+      }
+    }
+
+    return success(res, {
+      status: 'DISCONNECTED',
+      hasCredentials: true,
+      hasSession: false,
+      hasPhoneNumber: !!credentials.phoneNumber,
+    });
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/telegram/reconnect
+ * @desc    Quick reconnect using stored credentials (no phone input needed)
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/telegram/reconnect',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    if (channel.channelType !== 'TELEGRAM') {
+      throw AppError.badRequest('Channel is not Telegram type');
+    }
+
+    const tenantId = getTenantId(req);
+
+    // Get credentials
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      }
+    } catch (error) {
+      throw AppError.badRequest('Failed to decrypt credentials');
+    }
+
+    if (!credentials?.apiId || !credentials?.apiHash || !credentials?.sessionString) {
+      throw AppError.badRequest('Missing stored credentials or session. Please enter phone number to connect.');
+    }
+
+    try {
+      await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash, credentials.sessionString);
+      const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+
+      return success(res, {
+        status: 'connected',
+        sessionKey,
+        message: 'Reconnected successfully',
+      });
+    } catch (error) {
+      logger.warn(`Quick reconnect failed for channel ${channel.id}: ${error.message}`);
+      throw AppError.badRequest('Session expired. Please enter phone number to reconnect.');
+    }
+  })
+);
+
+/**
+ * @route   POST /api/v1/channels/:id/telegram/disconnect
+ * @desc    Disconnect Telegram session (keeps session in DB)
+ * @access  Private (Admin)
+ */
+router.post(
+  '/:id/telegram/disconnect',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const tenantId = getTenantId(req);
+
+    // Get credentials
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      } else if (channel.credentials && typeof channel.credentials === 'object') {
+        credentials = channel.credentials;
+      }
+    } catch (error) {
+      throw AppError.badRequest('Failed to get credentials');
+    }
+
+    if (credentials?.apiId) {
+      const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+      await telegramService.disconnect(sessionKey);
+    }
+
+    return success(res, { message: 'Telegram disconnected successfully' });
+  })
+);
+
+/**
+ * @route   DELETE /api/v1/channels/:id/telegram/session
+ * @desc    Delete Telegram session completely (logout and remove files)
+ * @access  Private (Admin)
+ */
+router.delete(
+  '/:id/telegram/session',
+  requirePermission('channels:update'),
+  [param('id').isInt().toInt(), validate],
+  asyncHandler(async (req, res) => {
+    const channel = await prisma.channelConfig.findFirst({
+      where: addTenantFilter(req, { id: req.params.id }),
+    });
+
+    if (!channel) throw AppError.notFound('Channel config not found');
+
+    const tenantId = getTenantId(req);
+
+    // Get credentials
+    let credentials;
+    try {
+      const encryptedData = channel.credentials?.encrypted;
+      if (encryptedData) {
+        credentials = JSON.parse(decrypt(encryptedData));
+      } else if (channel.credentials && typeof channel.credentials === 'object') {
+        credentials = channel.credentials;
+      }
+    } catch (error) {
+      throw AppError.badRequest('Failed to get credentials');
+    }
+
+    if (credentials?.apiId) {
+      const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+      await telegramService.deleteSession(sessionKey);
+    }
+
+    return success(res, { message: 'Telegram session deleted successfully' });
   })
 );
 

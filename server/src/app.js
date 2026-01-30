@@ -27,6 +27,8 @@ const positionRoutes = require('./routes/positions');
 const noteRoutes = require('./routes/notes');
 const activityRoutes = require('./routes/activity');
 const tenantRoutes = require('./routes/tenants');
+const telegramRoutes = require('./routes/telegram');
+const telegramProspectsRoutes = require('./routes/telegramProspects');
 
 // Initialize express app
 const app = express();
@@ -121,6 +123,8 @@ app.use('/api/v1/positions', positionRoutes);
 app.use('/api/v1/notes', noteRoutes);
 app.use('/api/v1/activity', activityRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
+app.use('/api/v1/telegram', telegramRoutes);
+app.use('/api/v1/telegram-prospects', telegramProspectsRoutes);
 
 // Serve static files in production
 if (config.env === 'production') {

@@ -7,6 +7,8 @@ const emailService = require('../services/email.service');
 const templateService = require('../services/template.service');
 const imapPollerService = require('../services/imapPoller.service');
 const whatsappWebService = require('../services/whatsappWeb.service');
+const telegramService = require('../services/telegram.service');
+const telegramProspectsService = require('../services/telegramProspects.service');
 const { decrypt } = require('../utils/encryption');
 const logger = require('../utils/logger');
 
@@ -20,6 +22,7 @@ function initializeWorkers() {
   queueService.registerHandler('EMAIL_SEND', handleEmailJob);
   queueService.registerHandler('CAMPAIGN_STEP', handleCampaignStepJob);
   queueService.registerHandler('CLEANUP', handleCleanupJob);
+  queueService.registerHandler('TELEGRAM_REPLY_POLL', handleTelegramReplyPollJob);
 
   // Start the queue processor
   queueService.start();
@@ -48,6 +51,11 @@ function initializeCronJobs() {
     } catch (error) {
       logger.error('IMAP polling cron error:', error.message);
     }
+  });
+
+  // Poll Telegram for replies every 5 minutes (configurable per channel)
+  cron.schedule('*/5 * * * *', async () => {
+    await scheduleTelegramReplyPolling();
   });
 
   // Daily cleanup at 3 AM
@@ -154,6 +162,7 @@ async function scheduleCampaignSteps() {
         },
         lead: true,
         contact: true,
+        prospect: true,
       },
       take: 100, // Process in batches
     });
@@ -173,7 +182,10 @@ async function scheduleCampaignSteps() {
         tenantId: recipient.campaign.tenantId,
         priority: 2,
       });
-      logger.info(`Queued campaign step for recipient ${recipient.id} (${recipient.contact?.email || 'no email'})`);
+      const recipientInfo = recipient.prospect
+        ? `prospect: ${recipient.prospect.firstName || recipient.prospect.username || recipient.prospect.telegramUserId}`
+        : (recipient.contact?.email || 'no email');
+      logger.info(`Queued campaign step for recipient ${recipient.id} (${recipientInfo})`);
     }
 
     logger.info(`Scheduled ${pendingRecipients.length} campaign step jobs`);
@@ -336,6 +348,11 @@ async function handleCampaignStepJob(payload) {
       },
       lead: true,
       contact: true,
+      prospect: {
+        include: {
+          group: true,
+        },
+      },
     },
   });
 
@@ -356,17 +373,27 @@ async function handleCampaignStepJob(payload) {
     return { completed: true };
   }
 
+  // Check if this is a prospect recipient
+  const isProspectRecipient = !!recipient.prospectId && !!recipient.prospect;
+
   logger.info(`Executing campaign step ${currentStep.stepOrder} for recipient ${recipientId}`, {
     channelType: currentStep.channelType,
     templateId: currentStep.templateId,
     contactEmail: recipient.contact?.email,
     contactPhone: recipient.contact?.phone,
+    isProspect: isProspectRecipient,
+    prospectId: recipient.prospectId,
   });
 
-  // Build template context
+  // Build template context - for prospects, create a pseudo contact
   const context = templateService.buildContext({
     lead: recipient.lead,
-    contact: recipient.contact,
+    contact: isProspectRecipient ? {
+      name: `${recipient.prospect.firstName || ''} ${recipient.prospect.lastName || ''}`.trim() || recipient.prospect.username,
+      firstName: recipient.prospect.firstName,
+      lastName: recipient.prospect.lastName,
+      phone: recipient.prospect.phone,
+    } : recipient.contact,
     sender: recipient.campaign.createdBy,
     tenant: recipient.campaign.tenant,
   });
@@ -412,6 +439,26 @@ async function handleCampaignStepJob(payload) {
           renderedBody
         );
         break;
+      case 'TELEGRAM':
+        if (isProspectRecipient) {
+          // Send to Telegram prospect using their telegramUserId
+          sendResult = await sendTelegramToProspect(
+            recipient.campaign.tenantId,
+            credentials,
+            recipient.prospect,
+            renderedBody
+          );
+        } else {
+          // Send to lead/contact with telegramId in customFields
+          sendResult = await sendTelegram(
+            recipient.campaign.tenantId,
+            credentials,
+            recipient.contact,
+            recipient.lead,
+            renderedBody
+          );
+        }
+        break;
       default:
         logger.warn(`Channel type ${currentStep.channelType} not implemented for campaigns`);
         sendResult = { success: false, error: `Channel type ${currentStep.channelType} not supported` };
@@ -421,21 +468,23 @@ async function handleCampaignStepJob(payload) {
     sendResult = { success: false, error: error.message };
   }
 
-  // Record the contact attempt
-  await recordAttempt(
-    recipient,
-    currentStep,
-    campaignId,
-    sendResult.success ? 'SENT' : 'FAILED',
-    {
-      stepId: currentStep.id,
-      stepOrder: currentStep.stepOrder,
-      messageId: sendResult.messageId,
-      error: sendResult.error,
-    },
-    renderedBody,
-    renderedSubject
-  );
+  // Record the contact attempt (skip for prospect recipients as they have their own message tracking)
+  if (!isProspectRecipient) {
+    await recordAttempt(
+      recipient,
+      currentStep,
+      campaignId,
+      sendResult.success ? 'SENT' : 'FAILED',
+      {
+        stepId: currentStep.id,
+        stepOrder: currentStep.stepOrder,
+        messageId: sendResult.messageId,
+        error: sendResult.error,
+      },
+      renderedBody,
+      renderedSubject
+    );
+  }
 
   // Create/update conversation for email channels
   if (sendResult.success && ['EMAIL_SMTP', 'EMAIL_API'].includes(currentStep.channelType)) {
@@ -720,6 +769,137 @@ async function sendWhatsAppWeb(tenantId, channelId, contact, body) {
 }
 
 /**
+ * Send Telegram message
+ * Uses telegramId or username stored in lead's customFields
+ */
+async function sendTelegram(tenantId, credentials, contact, lead, body) {
+  // Get telegramId from lead's customFields (set during import)
+  const telegramId = lead?.customFields?.telegramId;
+  const telegramUsername = lead?.customFields?.telegramUsername;
+
+  if (!telegramId && !telegramUsername) {
+    return { success: false, error: 'Contact has no Telegram ID or username' };
+  }
+
+  // Build session key from credentials (apiId stored in credentials)
+  const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+
+  // Check if session is authorized
+  const authStatus = await telegramService.isAuthorized(sessionKey);
+  if (!authStatus.authorized) {
+    // Try to reconnect if session exists
+    if (authStatus.hasSession && credentials.apiId && credentials.apiHash) {
+      try {
+        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash);
+      } catch (error) {
+        logger.error('Telegram reconnect failed', { error: error.message });
+        return { success: false, error: 'Telegram not connected. Please reconnect.' };
+      }
+    } else {
+      return { success: false, error: 'Telegram not connected. Please reconnect.' };
+    }
+  }
+
+  // Send message to telegramId (numeric) or username
+  const userId = telegramId || telegramUsername;
+
+  const result = await telegramService.sendMessage(sessionKey, userId, body);
+
+  if (result.success) {
+    logger.info('Campaign Telegram message sent', {
+      to: userId,
+      messageId: result.messageId,
+    });
+  } else {
+    logger.error('Campaign Telegram send failed', {
+      to: userId,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Send Telegram message to a prospect
+ * Uses the prospect's telegramUserId directly
+ */
+async function sendTelegramToProspect(tenantId, credentials, prospect, body) {
+  if (!prospect.telegramUserId) {
+    return { success: false, error: 'Prospect has no Telegram user ID' };
+  }
+
+  // Build session key from credentials
+  const sessionKey = telegramService.getSessionKey(tenantId, credentials.apiId);
+
+  // Check if session is authorized
+  const authStatus = await telegramService.isAuthorized(sessionKey);
+  if (!authStatus.authorized) {
+    // Try to reconnect if session exists
+    if (authStatus.hasSession && credentials.apiId && credentials.apiHash) {
+      try {
+        await telegramService.reconnect(tenantId, credentials.apiId, credentials.apiHash);
+      } catch (error) {
+        logger.error('Telegram reconnect failed for prospect', { error: error.message });
+        return { success: false, error: 'Telegram not connected. Please reconnect.' };
+      }
+    } else {
+      return { success: false, error: 'Telegram not connected. Please reconnect.' };
+    }
+  }
+
+  // Random delay between 5-30 seconds to appear human-like
+  const delay = Math.floor(Math.random() * 25000) + 5000;
+  logger.info(`Telegram prospect: waiting ${delay}ms before sending`, { to: prospect.telegramUserId });
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  // Send message using telegramUserId
+  const result = await telegramService.sendMessage(sessionKey, prospect.telegramUserId, body);
+
+  if (result.success) {
+    logger.info('Campaign Telegram message sent to prospect', {
+      to: prospect.telegramUserId,
+      prospectId: prospect.id,
+      messageId: result.messageId,
+    });
+
+    // Update prospect status to MESSAGED and record message
+    try {
+      await prisma.telegramProspect.update({
+        where: { id: prospect.id },
+        data: {
+          status: 'MESSAGED',
+          lastMessagedAt: new Date(),
+        },
+      });
+
+      // Record the outbound message
+      await prisma.telegramProspectMessage.create({
+        data: {
+          prospectId: prospect.id,
+          direction: 'OUTBOUND',
+          content: body,
+          telegramMsgId: result.messageId?.toString(),
+          sentAt: new Date(),
+        },
+      });
+
+      logger.info('Prospect status updated to MESSAGED', { prospectId: prospect.id });
+    } catch (updateError) {
+      logger.error('Failed to update prospect status', { error: updateError.message, prospectId: prospect.id });
+    }
+  } else {
+    logger.error('Campaign Telegram send to prospect failed', {
+      to: prospect.telegramUserId,
+      prospectId: prospect.id,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
+/**
  * Handle cleanup job
  */
 async function handleCleanupJob(payload) {
@@ -732,6 +912,113 @@ async function handleCleanupJob(payload) {
   // Don't delete, just summarize
 
   return { jobsDeleted };
+}
+
+/**
+ * Schedule Telegram reply polling for all enabled channels
+ */
+async function scheduleTelegramReplyPolling() {
+  try {
+    // Get all active TELEGRAM channels with reply polling enabled
+    const telegramChannels = await prisma.channelConfig.findMany({
+      where: {
+        channelType: 'TELEGRAM',
+        isActive: true,
+      },
+      include: {
+        tenant: { select: { id: true, status: true } },
+      },
+    });
+
+    for (const channel of telegramChannels) {
+      // Skip if tenant is not active
+      if (channel.tenant?.status !== 'ACTIVE') continue;
+
+      // Check if reply polling is enabled in settings
+      const settings = channel.settings || {};
+      const pollingEnabled = settings.replyPolling?.enabled !== false; // Default to true
+
+      if (!pollingEnabled) continue;
+
+      // Check interval (default 5 minutes)
+      const intervalMinutes = settings.replyPolling?.intervalMinutes || 5;
+
+      // Simple check: the cron runs every 5 minutes, so if interval is 5, always run
+      // For longer intervals, we'd need to track last poll time
+      // For now, we'll let the service handle rate limiting
+      if (intervalMinutes > 5) {
+        // Skip some runs based on interval
+        const currentMinute = new Date().getMinutes();
+        if (currentMinute % intervalMinutes !== 0) continue;
+      }
+
+      // Queue polling job
+      await queueService.addJob('TELEGRAM_REPLY_POLL', {
+        channelConfigId: channel.id,
+      }, {
+        tenantId: channel.tenantId,
+        priority: 3,
+      });
+
+      logger.debug(`Scheduled Telegram reply poll for channel ${channel.id}`);
+    }
+  } catch (error) {
+    logger.error('Failed to schedule Telegram reply polling', { error: error.message });
+  }
+}
+
+/**
+ * Handle Telegram reply polling job
+ */
+async function handleTelegramReplyPollJob(payload) {
+  const { channelConfigId } = payload;
+
+  const channel = await prisma.channelConfig.findUnique({
+    where: { id: channelConfigId },
+  });
+
+  if (!channel || channel.channelType !== 'TELEGRAM') {
+    return { skipped: true, reason: 'Channel not found or not Telegram type' };
+  }
+
+  // Decrypt credentials
+  let credentials;
+  try {
+    const encryptedData = channel.credentials?.encrypted;
+    if (encryptedData) {
+      credentials = JSON.parse(decrypt(encryptedData));
+    } else if (channel.credentials && typeof channel.credentials === 'object') {
+      credentials = channel.credentials;
+    } else {
+      throw new Error('No credentials found');
+    }
+  } catch (error) {
+    logger.error('Failed to decrypt Telegram credentials for polling', { channelConfigId, error: error.message });
+    return { success: false, error: 'Failed to decrypt credentials' };
+  }
+
+  // Get auto-convert setting
+  const autoConvert = channel.settings?.autoConvert?.enabled || false;
+
+  try {
+    const result = await telegramProspectsService.pollReplies(
+      channelConfigId,
+      credentials,
+      channel.tenantId,
+      autoConvert
+    );
+
+    logger.info('Telegram reply poll completed', {
+      channelConfigId,
+      repliesFound: result.repliesFound,
+      prospectsChecked: result.prospectsChecked,
+    });
+
+    return result;
+  } catch (error) {
+    logger.error('Telegram reply poll failed', { channelConfigId, error: error.message });
+    return { success: false, error: error.message };
+  }
 }
 
 module.exports = {
