@@ -114,7 +114,7 @@ function App() {
 
         {/* Prospects */}
         <Route path="prospects" element={<ProspectGroupList />} />
-        <Route path="prospects/:groupId" element={<ProspectGroupDetail />} />
+        <Route path="prospects/:type/:groupId" element={<ProspectGroupDetail />} />
 
         {/* Analytics */}
         <Route path="analytics" element={<Analytics />} />

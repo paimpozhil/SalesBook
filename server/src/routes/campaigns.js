@@ -252,10 +252,11 @@ router.post(
     body('filters').optional().isObject(),
     body('primaryOnly').optional().isBoolean(),
     body('prospectGroupIds').optional().isArray(),
+    body('whatsappProspectGroupIds').optional().isArray(),
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { leadIds, contactIds, filters, primaryOnly = false, prospectGroupIds } = req.body;
+    const { leadIds, contactIds, filters, primaryOnly = false, prospectGroupIds, whatsappProspectGroupIds } = req.body;
     const tenantId = getTenantId(req);
 
     const campaign = await prisma.campaign.findFirst({
@@ -309,6 +310,52 @@ router.post(
 
       return success(res, {
         message: `Added ${created.count} prospect recipients from ${prospectGroupIds.length} group(s)`,
+        count: created.count,
+        totalProspects: prospects.length,
+      });
+    }
+
+    // If whatsappProspectGroupIds provided, add WhatsApp prospects from those groups
+    if (whatsappProspectGroupIds?.length) {
+      // Get WhatsApp prospects from the selected groups
+      const prospects = await prisma.whatsAppProspect.findMany({
+        where: {
+          tenantId,
+          groupId: { in: whatsappProspectGroupIds },
+          status: { in: ['PENDING', 'MESSAGED'] }, // Only add prospects that haven't been converted
+        },
+        include: {
+          group: true,
+        },
+      });
+
+      if (prospects.length === 0) {
+        return success(res, { message: 'No eligible WhatsApp prospects found in selected groups', count: 0 });
+      }
+
+      // Create campaign recipients for each WhatsApp prospect
+      const recipientData = prospects.map((prospect) => ({
+        campaignId: campaign.id,
+        whatsappProspectId: prospect.id,
+        status: 'PENDING',
+        currentStep: 1,
+        metadata: {
+          type: 'whatsapp_prospect',
+          whatsappUserId: prospect.whatsappUserId,
+          prospectName: prospect.name || prospect.phone || 'Unknown',
+          groupId: prospect.groupId,
+          groupName: prospect.group?.name,
+        },
+      }));
+
+      // Use createMany with skipDuplicates
+      const created = await prisma.campaignRecipient.createMany({
+        data: recipientData,
+        skipDuplicates: true,
+      });
+
+      return success(res, {
+        message: `Added ${created.count} WhatsApp prospect recipients from ${whatsappProspectGroupIds.length} group(s)`,
         count: created.count,
         totalProspects: prospects.length,
       });
@@ -748,6 +795,15 @@ router.get(
               group: { select: { name: true } },
             },
           },
+          whatsappProspect: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              whatsappUserId: true,
+              group: { select: { name: true } },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -760,14 +816,30 @@ router.get(
     for (const recipient of recipients) {
       if (recipient.prospect) {
         recipient.isProspect = true;
+        recipient.prospectType = 'telegram';
         recipient.prospectName = `${recipient.prospect.firstName || ''} ${recipient.prospect.lastName || ''}`.trim() || recipient.prospect.username || 'Unknown';
         recipient.telegramUserId = recipient.prospect.telegramUserId;
         recipient.prospectGroupName = recipient.prospect.group?.name;
+      } else if (recipient.whatsappProspect) {
+        recipient.isProspect = true;
+        recipient.prospectType = 'whatsapp';
+        recipient.prospectName = recipient.whatsappProspect.name || recipient.whatsappProspect.phone || 'Unknown';
+        recipient.prospectPhone = recipient.whatsappProspect.phone;
+        recipient.whatsappUserId = recipient.whatsappProspect.whatsappUserId;
+        recipient.prospectGroupName = recipient.whatsappProspect.group?.name;
       } else if (!recipient.lead && !recipient.contact && recipient.metadata?.type === 'telegram_prospect') {
         // Fallback to metadata for legacy records
         recipient.isProspect = true;
+        recipient.prospectType = 'telegram';
         recipient.prospectName = recipient.metadata.prospectName;
         recipient.telegramUserId = recipient.metadata.telegramUserId;
+        recipient.prospectGroupName = recipient.metadata.groupName;
+      } else if (!recipient.lead && !recipient.contact && recipient.metadata?.type === 'whatsapp_prospect') {
+        // Fallback to metadata for WhatsApp legacy records
+        recipient.isProspect = true;
+        recipient.prospectType = 'whatsapp';
+        recipient.prospectName = recipient.metadata.prospectName;
+        recipient.whatsappUserId = recipient.metadata.whatsappUserId;
         recipient.prospectGroupName = recipient.metadata.groupName;
       }
     }

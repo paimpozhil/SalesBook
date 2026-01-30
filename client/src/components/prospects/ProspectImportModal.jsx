@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Modal, Form, Button, Table, Alert, Badge, Spinner, ListGroup } from 'react-bootstrap';
-import { FaTelegram, FaUsers, FaDownload, FaArrowRight, FaArrowLeft } from 'react-icons/fa';
+import { FaTelegram, FaWhatsapp, FaUsers, FaDownload, FaArrowRight, FaArrowLeft } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 
@@ -21,7 +21,7 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
   const [selectedChannel, setSelectedChannel] = useState(null);
 
   // Groups
-  const [telegramGroups, setTelegramGroups] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
 
   // Contacts
@@ -40,7 +40,7 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
   const resetForm = () => {
     setStep(STEPS.SELECT_CHANNEL);
     setSelectedChannel(null);
-    setTelegramGroups([]);
+    setGroups([]);
     setSelectedGroup(null);
     setContacts([]);
     setSelectedContacts([]);
@@ -56,13 +56,33 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
   const fetchChannels = async () => {
     setLoading(true);
     try {
-      const response = await api.get('/channels?channelType=TELEGRAM');
-      setChannels(response.data.data);
+      // Fetch both Telegram and WhatsApp Web channels
+      const [telegramResponse, whatsappResponse] = await Promise.all([
+        api.get('/channels?channelType=TELEGRAM'),
+        api.get('/channels?channelType=WHATSAPP_WEB'),
+      ]);
+
+      const allChannels = [
+        ...telegramResponse.data.data.map((ch) => ({ ...ch, channelType: 'TELEGRAM' })),
+        ...whatsappResponse.data.data.map((ch) => ({ ...ch, channelType: 'WHATSAPP_WEB' })),
+      ];
+      setChannels(allChannels);
     } catch (err) {
-      setError('Failed to load Telegram channels');
+      setError('Failed to load channels');
     } finally {
       setLoading(false);
     }
+  };
+
+  const isTelegram = selectedChannel?.channelType === 'TELEGRAM';
+  const isWhatsApp = selectedChannel?.channelType === 'WHATSAPP_WEB';
+
+  const getChannelIcon = (channelType) => {
+    return channelType === 'TELEGRAM' ? (
+      <FaTelegram className="me-2 text-primary" />
+    ) : (
+      <FaWhatsapp className="me-2 text-success" />
+    );
   };
 
   const handleSelectChannel = async (channel) => {
@@ -71,21 +91,37 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
     setError(null);
 
     try {
-      // Check if channel is connected
-      const statusResponse = await api.get(`/channels/${channel.id}/telegram/status`);
-      const { status, sessionKey } = statusResponse.data.data;
+      if (channel.channelType === 'TELEGRAM') {
+        // Check if Telegram channel is connected
+        const statusResponse = await api.get(`/channels/${channel.id}/telegram/status`);
+        const { status } = statusResponse.data.data;
 
-      if (status !== 'CONNECTED') {
-        setError('This Telegram channel is not connected. Please connect it first in Channel settings.');
-        return;
+        if (status !== 'CONNECTED') {
+          setError('This Telegram channel is not connected. Please connect it first in Channel settings.');
+          return;
+        }
+
+        // Fetch Telegram groups
+        const groupsResponse = await api.get(`/telegram-prospects/telegram-groups?channelConfigId=${channel.id}`);
+        setGroups(groupsResponse.data.data);
+      } else if (channel.channelType === 'WHATSAPP_WEB') {
+        // Check if WhatsApp channel is connected
+        const statusResponse = await api.get(`/channels/${channel.id}/whatsapp-web/status`);
+        const { status } = statusResponse.data.data;
+
+        if (status !== 'CONNECTED') {
+          setError('This WhatsApp channel is not connected. Please connect it first in Channel settings.');
+          return;
+        }
+
+        // Fetch WhatsApp groups
+        const groupsResponse = await api.get(`/whatsapp-prospects/whatsapp-groups?channelConfigId=${channel.id}`);
+        setGroups(groupsResponse.data.data);
       }
 
-      // Fetch groups
-      const groupsResponse = await api.get(`/telegram-prospects/telegram-groups?channelConfigId=${channel.id}`);
-      setTelegramGroups(groupsResponse.data.data);
       setStep(STEPS.SELECT_GROUP);
     } catch (err) {
-      setError(err.response?.data?.error?.message || 'Failed to load Telegram groups');
+      setError(err.response?.data?.error?.message || 'Failed to load groups');
     } finally {
       setLoading(false);
     }
@@ -97,10 +133,20 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
     setError(null);
 
     try {
-      const response = await api.get(
-        `/telegram-prospects/telegram-groups/${group.id}/contacts?channelConfigId=${selectedChannel.id}`
-      );
-      const fetchedContacts = response.data.data;
+      let fetchedContacts;
+
+      if (isTelegram) {
+        const response = await api.get(
+          `/telegram-prospects/telegram-groups/${group.id}/contacts?channelConfigId=${selectedChannel.id}`
+        );
+        fetchedContacts = response.data.data;
+      } else if (isWhatsApp) {
+        const response = await api.get(
+          `/whatsapp-prospects/whatsapp-groups/${encodeURIComponent(group.id)}/contacts?channelConfigId=${selectedChannel.id}`
+        );
+        fetchedContacts = response.data.data;
+      }
+
       setContacts(fetchedContacts);
       setSelectedContacts(fetchedContacts.map((_, i) => i)); // Select all by default
       setCustomName(`${group.name} - ${new Date().toLocaleDateString()}`);
@@ -147,21 +193,30 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
     try {
       const contactsToImport = selectedContacts.map((i) => contacts[i]);
 
-      // Get session key from channel status
-      const statusResponse = await api.get(`/channels/${selectedChannel.id}/telegram/status`);
-      const { sessionKey } = statusResponse.data.data;
+      if (isTelegram) {
+        // Get session key from channel status
+        const statusResponse = await api.get(`/channels/${selectedChannel.id}/telegram/status`);
+        const { sessionKey } = statusResponse.data.data;
 
-      const response = await api.post('/telegram-prospects/groups', {
-        channelConfigId: selectedChannel.id,
-        sessionKey,
-        telegramGroupId: selectedGroup.id,
-        telegramGroupName: selectedGroup.name,
-        contacts: contactsToImport,
-        customName: customName.trim(),
-      });
+        await api.post('/telegram-prospects/groups', {
+          channelConfigId: selectedChannel.id,
+          sessionKey,
+          telegramGroupId: selectedGroup.id,
+          telegramGroupName: selectedGroup.name,
+          contacts: contactsToImport,
+          customName: customName.trim(),
+        });
+      } else if (isWhatsApp) {
+        await api.post('/whatsapp-prospects/groups', {
+          channelConfigId: selectedChannel.id,
+          whatsappGroupId: selectedGroup.id,
+          whatsappGroupName: selectedGroup.name,
+          contacts: contactsToImport,
+          customName: customName.trim(),
+        });
+      }
 
-      const { importedCount } = response.data.data;
-      toast.success(`Imported ${importedCount} prospects as "${customName.trim()}"`);
+      toast.success(`Imported ${contactsToImport.length} prospects as "${customName.trim()}"`);
 
       handleClose();
       if (onSuccess) onSuccess();
@@ -173,11 +228,12 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
   };
 
   const getStepTitle = () => {
+    const channelLabel = isTelegram ? 'Telegram' : isWhatsApp ? 'WhatsApp' : '';
     switch (step) {
       case STEPS.SELECT_CHANNEL:
-        return 'Select Telegram Channel';
+        return 'Select Channel';
       case STEPS.SELECT_GROUP:
-        return 'Select Telegram Group';
+        return `Select ${channelLabel} Group`;
       case STEPS.SELECT_CONTACTS:
         return `Select Contacts from ${selectedGroup?.name}`;
       case STEPS.NAME_GROUP:
@@ -187,11 +243,33 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
     }
   };
 
+  const getContactName = (contact) => {
+    if (isTelegram) {
+      return [contact.firstName, contact.lastName].filter(Boolean).join(' ') || '-';
+    } else if (isWhatsApp) {
+      return contact.name || '-';
+    }
+    return '-';
+  };
+
+  const getContactUsername = (contact) => {
+    if (isTelegram && contact.username) {
+      return (
+        <a href={`https://t.me/${contact.username}`} target="_blank" rel="noopener noreferrer">
+          @{contact.username}
+        </a>
+      );
+    } else if (isWhatsApp && contact.isAdmin) {
+      return <Badge bg="warning">Admin</Badge>;
+    }
+    return '-';
+  };
+
   return (
     <Modal show={show} onHide={handleClose} size="lg" backdrop="static">
       <Modal.Header closeButton>
         <Modal.Title>
-          <FaTelegram className="me-2 text-primary" />
+          {selectedChannel ? getChannelIcon(selectedChannel.channelType) : <FaUsers className="me-2" />}
           {getStepTitle()}
         </Modal.Title>
       </Modal.Header>
@@ -213,24 +291,30 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
               </div>
             ) : channels.length === 0 ? (
               <Alert variant="warning">
-                No Telegram channels found. Please create a Telegram channel first in the Channels page.
+                No Telegram or WhatsApp channels found. Please create a channel first in the Channels page.
               </Alert>
             ) : (
               <>
                 <p className="text-muted mb-3">
-                  Select a connected Telegram channel to import prospects from:
+                  Select a connected channel to import prospects from:
                 </p>
                 <ListGroup>
                   {channels.map((channel) => (
                     <ListGroup.Item
-                      key={channel.id}
+                      key={`${channel.channelType}-${channel.id}`}
                       action
                       onClick={() => handleSelectChannel(channel)}
                       className="d-flex justify-content-between align-items-center"
                     >
                       <div>
-                        <FaTelegram className="me-2 text-primary" />
+                        {getChannelIcon(channel.channelType)}
                         <strong>{channel.name}</strong>
+                        <Badge
+                          bg={channel.channelType === 'TELEGRAM' ? 'primary' : 'success'}
+                          className="ms-2"
+                        >
+                          {channel.channelType === 'TELEGRAM' ? 'Telegram' : 'WhatsApp'}
+                        </Badge>
                         {!channel.isActive && (
                           <Badge bg="secondary" className="ms-2">
                             Inactive
@@ -254,15 +338,15 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
                 <Spinner animation="border" className="me-2" />
                 Loading groups...
               </div>
-            ) : telegramGroups.length === 0 ? (
+            ) : groups.length === 0 ? (
               <Alert variant="warning">
-                No groups found. Make sure you are a member of at least one group or channel.
+                No groups found. Make sure you are a member of at least one group.
               </Alert>
             ) : (
               <>
                 <p className="text-muted mb-3">Select a group to import contacts from:</p>
                 <ListGroup>
-                  {telegramGroups.map((group) => (
+                  {groups.map((group) => (
                     <ListGroup.Item
                       key={group.id}
                       action
@@ -272,12 +356,16 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
                       <div>
                         <FaUsers className="me-2 text-primary" />
                         <strong>{group.name}</strong>
-                        <Badge bg={group.type === 'channel' ? 'info' : 'secondary'} className="ms-2">
-                          {group.type}
-                        </Badge>
+                        {group.type && (
+                          <Badge bg={group.type === 'channel' ? 'info' : 'secondary'} className="ms-2">
+                            {group.type}
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-muted">
-                        {group.participantsCount > 0 && <span>{group.participantsCount} members</span>}
+                        {(group.participantsCount > 0 || group.participantCount > 0) && (
+                          <span>{group.participantsCount || group.participantCount} members</span>
+                        )}
                         <FaArrowRight className="ms-2" />
                       </div>
                     </ListGroup.Item>
@@ -321,7 +409,7 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
                   <tr>
                     <th style={{ width: '40px' }}></th>
                     <th>Name</th>
-                    <th>Username</th>
+                    <th>{isTelegram ? 'Username' : 'Role'}</th>
                     <th>Phone</th>
                   </tr>
                 </thead>
@@ -339,23 +427,9 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
                         />
                       </td>
                       <td>
-                        <strong>
-                          {[contact.firstName, contact.lastName].filter(Boolean).join(' ') || '-'}
-                        </strong>
+                        <strong>{getContactName(contact)}</strong>
                       </td>
-                      <td>
-                        {contact.username ? (
-                          <a
-                            href={`https://t.me/${contact.username}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            @{contact.username}
-                          </a>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
+                      <td>{getContactUsername(contact)}</td>
                       <td>{contact.phone || '-'}</td>
                     </tr>
                   ))}
@@ -395,9 +469,9 @@ function ProspectImportModal({ show, onHide, onSuccess }) {
             <Alert variant="info">
               <strong>Summary:</strong>
               <br />
-              Channel: {selectedChannel?.name}
+              Channel: {selectedChannel?.name} ({isTelegram ? 'Telegram' : 'WhatsApp'})
               <br />
-              Telegram Group: {selectedGroup?.name}
+              Group: {selectedGroup?.name}
               <br />
               Contacts to Import: {selectedContacts.length}
             </Alert>

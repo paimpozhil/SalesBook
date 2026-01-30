@@ -638,6 +638,450 @@ class WhatsAppWebService {
       return null;
     }
   }
+
+  /**
+   * Inject WhatsApp Store finder script into page
+   * This allows access to WhatsApp's internal data structures
+   */
+  async injectStore(page) {
+    const storeReady = await page.evaluate(async () => {
+      // Helper to sleep
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+      // Try to find and expose the Store
+      async function findStore() {
+        // Method 1: Direct window.Store
+        if (window.Store && window.Store.Chat) {
+          return window.Store;
+        }
+
+        // Method 2: Look through webpackChunkwhatsapp_web_client
+        const webpackChunks = window.webpackChunkwhatsapp_web_client;
+        if (webpackChunks) {
+          webpackChunks.push([['scraper'], {}, (req) => {
+            const moduleIds = Object.keys(req.m);
+            for (const id of moduleIds) {
+              try {
+                const mod = req(id);
+                if (mod && mod.Chat && mod.Contact) {
+                  window.Store = mod;
+                  return;
+                }
+                if (mod && mod.default && mod.default.Chat) {
+                  window.Store = mod.default;
+                  return;
+                }
+              } catch (e) { }
+            }
+          }]);
+        }
+
+        // Method 3: Search for Store in module cache (require)
+        if (window.require) {
+          try {
+            const store = window.require('WAWebCollections');
+            if (store) {
+              window.Store = store;
+              return store;
+            }
+          } catch (e) { }
+        }
+
+        return window.Store;
+      }
+
+      // Try multiple times to find the store
+      for (let i = 0; i < 30; i++) {
+        const store = await findStore();
+        if (store && store.Chat) return true;
+        await sleep(1000);
+      }
+      return false;
+    });
+
+    return storeReady;
+  }
+
+  /**
+   * Get WhatsApp groups from connected session
+   * @param {number} tenantId - Tenant ID
+   * @param {number} channelId - Channel ID
+   * @returns {Array} List of groups with id, name, participantCount
+   */
+  async getGroups(tenantId, channelId) {
+    const key = this.getKey(tenantId, channelId);
+    const client = this.getClient(tenantId, channelId);
+
+    if (!client || !client.page) {
+      logger.error(`No WhatsApp client found for ${key}`);
+      throw new Error('WhatsApp not connected. Please connect first.');
+    }
+
+    const { page } = client;
+
+    try {
+      // Inject Store if not already done
+      logger.info(`Injecting Store for ${key}...`);
+      const storeReady = await this.injectStore(page);
+
+      if (!storeReady) {
+        throw new Error('Could not access WhatsApp internals. Please refresh the connection.');
+      }
+
+      logger.info(`Store injected, fetching groups for ${key}...`);
+
+      // Fetch groups from Store
+      const groups = await page.evaluate(() => {
+        const store = window.Store;
+        if (!store || !store.Chat) return [];
+
+        const chats = store.Chat.getModelsArray ? store.Chat.getModelsArray() : Array.from(store.Chat.models || []);
+
+        return chats
+          .filter(chat => {
+            return chat.isGroup ||
+              (chat.id && chat.id._serialized && chat.id._serialized.includes('@g.us')) ||
+              chat.type === 'group';
+          })
+          .map(chat => {
+            let participantCount = 0;
+            if (chat.groupMetadata && chat.groupMetadata.participants) {
+              const p = chat.groupMetadata.participants;
+              participantCount = p.length || (p.getModelsArray ? p.getModelsArray().length : 0);
+            }
+            return {
+              id: chat.id._serialized || chat.id.toString(),
+              name: chat.name || chat.formattedTitle || 'Unknown Group',
+              participantCount
+            };
+          });
+      });
+
+      // Sort groups by name
+      groups.sort((a, b) => a.name.localeCompare(b.name));
+
+      logger.info(`Found ${groups.length} WhatsApp groups for ${key}`);
+      return groups;
+
+    } catch (error) {
+      logger.error(`Error fetching WhatsApp groups: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get members from a WhatsApp group
+   * @param {number} tenantId - Tenant ID
+   * @param {number} channelId - Channel ID
+   * @param {string} groupId - WhatsApp group ID (e.g., "120363...@g.us")
+   * @returns {Array} List of members with id, phone, name, isAdmin
+   */
+  async getGroupMembers(tenantId, channelId, groupId) {
+    const key = this.getKey(tenantId, channelId);
+    const client = this.getClient(tenantId, channelId);
+
+    if (!client || !client.page) {
+      logger.error(`No WhatsApp client found for ${key}`);
+      throw new Error('WhatsApp not connected. Please connect first.');
+    }
+
+    const { page } = client;
+
+    try {
+      // Ensure Store is injected
+      const storeReady = await this.injectStore(page);
+      if (!storeReady) {
+        throw new Error('Could not access WhatsApp internals. Please refresh the connection.');
+      }
+
+      logger.info(`Fetching members for group ${groupId}...`);
+
+      const members = await page.evaluate(async (groupId) => {
+        const store = window.Store;
+        const chat = store.Chat.get(groupId);
+
+        if (!chat) {
+          throw new Error('Group not found');
+        }
+
+        // Ensure metadata is loaded
+        if (!chat.groupMetadata) {
+          if (chat.loadGroupMetadata) await chat.loadGroupMetadata();
+        }
+
+        // Wait a bit if still not there
+        if (!chat.groupMetadata) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        if (!chat.groupMetadata || !chat.groupMetadata.participants) {
+          throw new Error('Could not load group participants');
+        }
+
+        const participants = chat.groupMetadata.participants.getModelsArray ?
+          chat.groupMetadata.participants.getModelsArray() :
+          Array.from(chat.groupMetadata.participants);
+
+        return participants.map(p => {
+          const id = p.id;
+
+          // Get the serialized ID - this is the most reliable source
+          let idStr = '';
+          if (id._serialized) {
+            idStr = id._serialized;
+          } else if (typeof id === 'string') {
+            idStr = id;
+          } else if (id.toString) {
+            idStr = id.toString();
+          }
+
+          // Determine if this is a LID (Linked ID) or regular @c.us ID
+          // LID format: 123456789@lid or ends with @lid.whatsapp.net
+          // Regular format: 919876543210@c.us
+          const isLidUser = idStr.includes('@lid') || (id.server && id.server.includes('lid'));
+
+          let phone = '';
+          let name = 'Unknown';
+
+          // Try to get contact details from the Store
+          let contact = null;
+          if (store.Contact) {
+            contact = store.Contact.get(id);
+            if (contact) {
+              // Name extraction
+              name = contact.name || contact.pushname || contact.formattedName || contact.verifiedName || 'Unknown';
+            }
+          }
+
+          // For regular @c.us users, id.user contains the phone number
+          if (!isLidUser && id.user) {
+            const userStr = String(id.user);
+            // Validate it looks like a phone number (7-15 digits)
+            if (/^\d{7,15}$/.test(userStr)) {
+              phone = userStr;
+            }
+          }
+
+          // If no phone yet, try contact.phoneNumber
+          if (!phone && contact) {
+            if (contact.phoneNumber) {
+              if (typeof contact.phoneNumber === 'object') {
+                // phoneNumber might be a Wid object
+                if (contact.phoneNumber.user) {
+                  const pnUser = String(contact.phoneNumber.user);
+                  if (/^\d{7,15}$/.test(pnUser)) {
+                    phone = pnUser;
+                  }
+                } else if (contact.phoneNumber._serialized) {
+                  const pnSer = contact.phoneNumber._serialized;
+                  if (pnSer.includes('@c.us')) {
+                    const extracted = pnSer.split('@')[0];
+                    if (/^\d{7,15}$/.test(extracted)) {
+                      phone = extracted;
+                    }
+                  }
+                }
+              } else if (typeof contact.phoneNumber === 'string') {
+                const cleaned = contact.phoneNumber.replace(/[^\d]/g, '');
+                if (/^\d{7,15}$/.test(cleaned)) {
+                  phone = cleaned;
+                }
+              } else if (typeof contact.phoneNumber === 'number') {
+                phone = String(contact.phoneNumber);
+              }
+            }
+
+            // Try userid field
+            if (!phone && contact.userid) {
+              const uid = String(contact.userid);
+              if (/^\d{7,15}$/.test(uid)) {
+                phone = uid;
+              }
+            }
+
+            // Try to get phone from contact's id if it's @c.us format
+            if (!phone && contact.id) {
+              const cid = contact.id._serialized || contact.id;
+              if (typeof cid === 'string' && cid.includes('@c.us')) {
+                const extracted = cid.split('@')[0];
+                if (/^\d{7,15}$/.test(extracted)) {
+                  phone = extracted;
+                }
+              }
+            }
+          }
+
+          // Fallback: extract from serialized ID if it's @c.us format (not LID)
+          if (!phone && typeof idStr === 'string' && idStr.includes('@c.us')) {
+            const parts = idStr.split('@');
+            if (parts[0] && /^\d{7,15}$/.test(parts[0])) {
+              phone = parts[0];
+            }
+          }
+
+          // Final cleanup - ensure only digits
+          phone = phone.replace(/[^\d]/g, '');
+
+          // Console log for debugging (will show in browser console)
+          console.log('WhatsApp member extraction:', {
+            idStr,
+            isLidUser,
+            idUser: id.user,
+            extractedPhone: phone,
+            name,
+            hasContact: !!contact
+          });
+
+          return {
+            id: idStr,
+            phone: phone,  // Will be empty string for LID users without visible phone
+            name: name,
+            isAdmin: p.isAdmin || false,
+            isSuperAdmin: p.isSuperAdmin || false
+          };
+        });
+      }, groupId);
+
+      logger.info(`Found ${members.length} members in group ${groupId}`);
+      return members;
+
+    } catch (error) {
+      logger.error(`Error fetching group members: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get chat messages with a specific user
+   * @param {number} tenantId - Tenant ID
+   * @param {number} channelId - Channel ID
+   * @param {string} chatId - WhatsApp chat ID (e.g., "919876543210@c.us")
+   * @param {number} limit - Maximum number of messages to fetch
+   * @returns {Array} List of messages with id, content, timestamp, fromMe
+   */
+  async getChatMessages(tenantId, channelId, chatId, limit = 20) {
+    const key = this.getKey(tenantId, channelId);
+    const client = this.getClient(tenantId, channelId);
+
+    if (!client || !client.page) {
+      logger.error(`No WhatsApp client found for ${key}`);
+      throw new Error('WhatsApp not connected. Please connect first.');
+    }
+
+    const { page } = client;
+
+    try {
+      // Ensure Store is injected
+      const storeReady = await this.injectStore(page);
+      if (!storeReady) {
+        throw new Error('Could not access WhatsApp internals. Please refresh the connection.');
+      }
+
+      logger.info(`Fetching messages for chat ${chatId}...`);
+
+      // Playwright requires arguments to be wrapped in a single object
+      const messages = await page.evaluate(async ({ chatId, limit }) => {
+        const store = window.Store;
+
+        // Debug: log available chats
+        const allChats = store.Chat.getModelsArray ? store.Chat.getModelsArray() : Array.from(store.Chat.models || []);
+        console.log(`Total chats in Store: ${allChats.length}`);
+
+        // Try to find the chat
+        let chat = store.Chat.get(chatId);
+
+        // If not found, try searching by user ID portion
+        if (!chat) {
+          const userPart = chatId.split('@')[0];
+          console.log(`Chat ${chatId} not found directly, searching for user: ${userPart}`);
+
+          // Search through all chats for a matching ID
+          chat = allChats.find(c => {
+            const cid = c.id?._serialized || c.id?.user || '';
+            return cid.includes(userPart) || (c.id?.user && c.id.user === userPart);
+          });
+
+          if (chat) {
+            console.log(`Found chat via search: ${chat.id?._serialized}`);
+          }
+        }
+
+        if (!chat) {
+          console.log(`Chat ${chatId} not found in Store. Available individual chats:`,
+            allChats.filter(c => !c.isGroup).slice(0, 10).map(c => ({
+              id: c.id?._serialized,
+              name: c.name || c.formattedTitle
+            }))
+          );
+          return { found: false, messages: [], debug: `Chat ${chatId} not in Store` };
+        }
+
+        console.log(`Found chat: ${chat.id?._serialized}, name: ${chat.name || chat.formattedTitle}`);
+
+        // Load more messages if needed
+        if (chat.msgs && chat.msgs.length < limit) {
+          try {
+            if (chat.loadEarlierMsgs) {
+              await chat.loadEarlierMsgs();
+              console.log('Loaded earlier messages');
+            }
+          } catch (e) {
+            console.log('Failed to load earlier messages:', e.message);
+          }
+        }
+
+        // Get messages
+        const msgs = chat.msgs ?
+          (chat.msgs.getModelsArray ? chat.msgs.getModelsArray() : Array.from(chat.msgs)) :
+          [];
+
+        console.log(`Chat has ${msgs.length} total messages`);
+
+        // Sort by timestamp descending and take limit
+        const result = msgs
+          .filter(m => m.type === 'chat' || m.type === 'text') // Only text messages
+          .sort((a, b) => (b.t || 0) - (a.t || 0))
+          .slice(0, limit)
+          .map(m => ({
+            id: m.id?._serialized || m.id?.id || String(m.id),
+            content: m.body || m.text || '',
+            timestamp: m.t ? m.t * 1000 : Date.now(), // Convert to milliseconds
+            fromMe: m.fromMe || false,
+            type: m.type || 'chat'
+          }));
+
+        console.log(`Returning ${result.length} text messages`);
+        return { found: true, messages: result };
+      }, { chatId, limit });
+
+      if (!messages.found) {
+        logger.warn(`Chat ${chatId} not found: ${messages.debug}`);
+        return [];
+      }
+
+      logger.info(`Found ${messages.messages.length} messages in chat ${chatId}`);
+      return messages.messages;
+
+    } catch (error) {
+      logger.error(`Error fetching chat messages: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check for new incoming messages from a specific user since a given timestamp
+   * @param {number} tenantId - Tenant ID
+   * @param {number} channelId - Channel ID
+   * @param {string} chatId - WhatsApp chat ID
+   * @param {number} sinceTimestamp - Check messages after this timestamp (ms)
+   * @returns {Array} New incoming messages
+   */
+  async getNewIncomingMessages(tenantId, channelId, chatId, sinceTimestamp) {
+    const messages = await this.getChatMessages(tenantId, channelId, chatId, 50);
+
+    // Filter for incoming messages (not from me) after the given timestamp
+    return messages.filter(m => !m.fromMe && m.timestamp > sinceTimestamp);
+  }
 }
 
 // Export singleton instance

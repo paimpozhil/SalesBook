@@ -1,7 +1,16 @@
 import { useState, useEffect } from 'react';
 import { Card, Table, Button, Badge, Form, Row, Col, Pagination, Modal } from 'react-bootstrap';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { FaTelegram, FaArrowLeft, FaSync, FaUserPlus, FaComments, FaUser, FaExternalLinkAlt } from 'react-icons/fa';
+import {
+  FaTelegram,
+  FaWhatsapp,
+  FaArrowLeft,
+  FaSync,
+  FaUserPlus,
+  FaComments,
+  FaUser,
+  FaExternalLinkAlt,
+} from 'react-icons/fa';
 import api from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import toast from 'react-hot-toast';
@@ -14,8 +23,11 @@ const STATUS_COLORS = {
 };
 
 function ProspectGroupDetail() {
-  const { groupId } = useParams();
+  const { type, groupId } = useParams();
   const navigate = useNavigate();
+
+  const isTelegram = type === 'telegram';
+  const isWhatsApp = type === 'whatsapp';
 
   const [group, setGroup] = useState(null);
   const [prospects, setProspects] = useState([]);
@@ -32,10 +44,12 @@ function ProspectGroupDetail() {
   const [messages, setMessages] = useState([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
+  const baseEndpoint = isTelegram ? '/telegram-prospects' : '/whatsapp-prospects';
+
   useEffect(() => {
     fetchGroup();
     fetchProspects();
-  }, [groupId]);
+  }, [groupId, type]);
 
   useEffect(() => {
     fetchProspects();
@@ -43,7 +57,7 @@ function ProspectGroupDetail() {
 
   const fetchGroup = async () => {
     try {
-      const response = await api.get(`/telegram-prospects/groups/${groupId}`);
+      const response = await api.get(`${baseEndpoint}/groups/${groupId}`);
       setGroup(response.data.data);
     } catch (error) {
       console.error('Failed to fetch group:', error);
@@ -61,10 +75,10 @@ function ProspectGroupDetail() {
       if (statusFilter) params.append('status', statusFilter);
       if (search) params.append('search', search);
 
-      const response = await api.get(`/telegram-prospects/groups/${groupId}/prospects?${params.toString()}`);
+      const response = await api.get(`${baseEndpoint}/groups/${groupId}/prospects?${params.toString()}`);
       setProspects(response.data.data);
       if (response.data.meta?.pagination) {
-        setPagination(prev => ({ ...prev, ...response.data.meta.pagination }));
+        setPagination((prev) => ({ ...prev, ...response.data.meta.pagination }));
       }
     } catch (error) {
       console.error('Failed to fetch prospects:', error);
@@ -76,7 +90,7 @@ function ProspectGroupDetail() {
   const handleConvertToLead = async (prospectId) => {
     setConverting(prospectId);
     try {
-      const response = await api.post(`/telegram-prospects/${prospectId}/convert`);
+      await api.post(`${baseEndpoint}/${prospectId}/convert`);
       toast.success('Prospect converted to lead!');
       fetchProspects();
     } catch (error) {
@@ -91,26 +105,29 @@ function ProspectGroupDetail() {
 
     setPolling(true);
     try {
-      const response = await api.post('/telegram-prospects/poll-replies', {
+      const response = await api.post(`${baseEndpoint}/poll-replies`, {
         channelConfigId: group.channelConfigId,
       });
       const result = response.data.data;
-      const { repliesFound, prospectsChecked, results, errors } = result;
+      const { repliesFound, prospectsChecked, results, errors, message } = result;
 
-      if (repliesFound > 0) {
+      if (message) {
+        // WhatsApp returns a message about limited support
+        toast(message, { icon: '\u2139\uFE0F', duration: 5000 });
+      } else if (repliesFound > 0) {
         toast.success(`Found ${repliesFound} new replies!`);
-        // Show details of who replied
-        results?.forEach(r => {
-          toast.success(`${r.prospectName} replied: "${r.replyText?.substring(0, 50)}..."`, { duration: 5000 });
+        results?.forEach((r) => {
+          toast.success(`${r.prospectName} replied: "${r.replyText?.substring(0, 50)}..."`, {
+            duration: 5000,
+          });
         });
         fetchProspects();
       } else if (prospectsChecked === 0) {
-        toast('No MESSAGED prospects to check', { icon: 'ℹ️' });
+        toast('No MESSAGED prospects to check', { icon: '\u2139\uFE0F' });
       } else {
-        toast(`Checked ${prospectsChecked} prospects - no new replies`, { icon: 'ℹ️' });
+        toast(`Checked ${prospectsChecked} prospects - no new replies`, { icon: '\u2139\uFE0F' });
       }
 
-      // Show any errors
       if (errors?.length > 0) {
         console.error('Poll errors:', errors);
         toast.error(`${errors.length} prospects had errors checking replies`);
@@ -129,7 +146,7 @@ function ProspectGroupDetail() {
     setLoadingMessages(true);
 
     try {
-      const response = await api.get(`/telegram-prospects/${prospect.id}/messages`);
+      const response = await api.get(`${baseEndpoint}/${prospect.id}/messages`);
       setMessages(response.data.data);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -140,7 +157,50 @@ function ProspectGroupDetail() {
   };
 
   const handlePageChange = (page) => {
-    setPagination(prev => ({ ...prev, page }));
+    setPagination((prev) => ({ ...prev, page }));
+  };
+
+  const getProspectName = (prospect) => {
+    if (isTelegram) {
+      return [prospect.firstName, prospect.lastName].filter(Boolean).join(' ') || '-';
+    } else {
+      return prospect.name || '-';
+    }
+  };
+
+  const getProspectUsername = (prospect) => {
+    if (isTelegram && prospect.username) {
+      return (
+        <a
+          href={`https://t.me/${prospect.username}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-decoration-none"
+        >
+          @{prospect.username}
+          <FaExternalLinkAlt className="ms-1" size={10} />
+        </a>
+      );
+    } else if (isWhatsApp && prospect.isAdmin) {
+      return <Badge bg="warning">Admin</Badge>;
+    }
+    return '-';
+  };
+
+  const getSourceName = () => {
+    if (isTelegram) {
+      return group?.telegramGroupName || 'Unknown';
+    } else {
+      return group?.whatsappGroupName || 'Unknown';
+    }
+  };
+
+  const getIcon = () => {
+    return isTelegram ? (
+      <FaTelegram className="me-2 text-primary" />
+    ) : (
+      <FaWhatsapp className="me-2 text-success" />
+    );
   };
 
   const renderPagination = () => {
@@ -158,7 +218,11 @@ function ProspectGroupDetail() {
 
     items.push(
       <Pagination.First key="first" onClick={() => handlePageChange(1)} disabled={page === 1} />,
-      <Pagination.Prev key="prev" onClick={() => handlePageChange(page - 1)} disabled={page === 1} />
+      <Pagination.Prev
+        key="prev"
+        onClick={() => handlePageChange(page - 1)}
+        disabled={page === 1}
+      />
     );
 
     for (let i = start; i <= end; i++) {
@@ -170,8 +234,16 @@ function ProspectGroupDetail() {
     }
 
     items.push(
-      <Pagination.Next key="next" onClick={() => handlePageChange(page + 1)} disabled={page === totalPages} />,
-      <Pagination.Last key="last" onClick={() => handlePageChange(totalPages)} disabled={page === totalPages} />
+      <Pagination.Next
+        key="next"
+        onClick={() => handlePageChange(page + 1)}
+        disabled={page === totalPages}
+      />,
+      <Pagination.Last
+        key="last"
+        onClick={() => handlePageChange(totalPages)}
+        disabled={page === totalPages}
+      />
     );
 
     return <Pagination className="mb-0">{items}</Pagination>;
@@ -193,13 +265,12 @@ function ProspectGroupDetail() {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <div>
           <h2 className="mb-1">
-            <FaTelegram className="me-2 text-primary" />
+            {getIcon()}
             {group?.name}
           </h2>
           <p className="text-muted mb-0">
             <small>
-              From: {group?.telegramGroupName || 'Unknown'} |{' '}
-              Channel: {group?.channelConfig?.name || '-'} |{' '}
+              From: {getSourceName()} | Channel: {group?.channelConfig?.name || '-'} |{' '}
               {pagination.total} prospects
             </small>
           </p>
@@ -218,7 +289,7 @@ function ProspectGroupDetail() {
                 <Form.Label>Search</Form.Label>
                 <Form.Control
                   type="text"
-                  placeholder="Search by name or username..."
+                  placeholder={isTelegram ? 'Search by name or username...' : 'Search by name or phone...'}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && fetchProspects()}
@@ -232,7 +303,7 @@ function ProspectGroupDetail() {
                   value={statusFilter}
                   onChange={(e) => {
                     setStatusFilter(e.target.value);
-                    setPagination(prev => ({ ...prev, page: 1 }));
+                    setPagination((prev) => ({ ...prev, page: 1 }));
                   }}
                 >
                   <option value="">All Statuses</option>
@@ -268,7 +339,7 @@ function ProspectGroupDetail() {
               <thead>
                 <tr>
                   <th>Name</th>
-                  <th>Username</th>
+                  <th>{isTelegram ? 'Username' : 'Role'}</th>
                   <th>Phone</th>
                   <th>Status</th>
                   <th>Last Activity</th>
@@ -279,30 +350,12 @@ function ProspectGroupDetail() {
                 {prospects.map((prospect) => (
                   <tr key={prospect.id}>
                     <td>
-                      <strong>
-                        {[prospect.firstName, prospect.lastName].filter(Boolean).join(' ') || '-'}
-                      </strong>
+                      <strong>{getProspectName(prospect)}</strong>
                     </td>
-                    <td>
-                      {prospect.username ? (
-                        <a
-                          href={`https://t.me/${prospect.username}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-decoration-none"
-                        >
-                          @{prospect.username}
-                          <FaExternalLinkAlt className="ms-1" size={10} />
-                        </a>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
+                    <td>{getProspectUsername(prospect)}</td>
                     <td>{prospect.phone || '-'}</td>
                     <td>
-                      <Badge bg={STATUS_COLORS[prospect.status]}>
-                        {prospect.status}
-                      </Badge>
+                      <Badge bg={STATUS_COLORS[prospect.status]}>{prospect.status}</Badge>
                     </td>
                     <td>
                       <small className="text-muted">
@@ -372,7 +425,7 @@ function ProspectGroupDetail() {
         <Modal.Header closeButton>
           <Modal.Title>
             <FaComments className="me-2" />
-            Messages - {selectedProspect && [selectedProspect.firstName, selectedProspect.lastName].filter(Boolean).join(' ')}
+            Messages - {selectedProspect && getProspectName(selectedProspect)}
           </Modal.Title>
         </Modal.Header>
         <Modal.Body style={{ maxHeight: '60vh', overflowY: 'auto' }}>
@@ -388,9 +441,7 @@ function ProspectGroupDetail() {
                 <div
                   key={msg.id}
                   className={`p-3 rounded ${
-                    msg.direction === 'OUTBOUND'
-                      ? 'bg-primary text-white ms-auto'
-                      : 'bg-light me-auto'
+                    msg.direction === 'OUTBOUND' ? 'bg-primary text-white ms-auto' : 'bg-light me-auto'
                   }`}
                   style={{ maxWidth: '80%' }}
                 >

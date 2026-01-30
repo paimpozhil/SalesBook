@@ -9,6 +9,7 @@ const imapPollerService = require('../services/imapPoller.service');
 const whatsappWebService = require('../services/whatsappWeb.service');
 const telegramService = require('../services/telegram.service');
 const telegramProspectsService = require('../services/telegramProspects.service');
+const whatsappProspectsService = require('../services/whatsappProspects.service');
 const { decrypt } = require('../utils/encryption');
 const logger = require('../utils/logger');
 
@@ -23,6 +24,7 @@ function initializeWorkers() {
   queueService.registerHandler('CAMPAIGN_STEP', handleCampaignStepJob);
   queueService.registerHandler('CLEANUP', handleCleanupJob);
   queueService.registerHandler('TELEGRAM_REPLY_POLL', handleTelegramReplyPollJob);
+  queueService.registerHandler('WHATSAPP_REPLY_POLL', handleWhatsAppReplyPollJob);
 
   // Start the queue processor
   queueService.start();
@@ -56,6 +58,11 @@ function initializeCronJobs() {
   // Poll Telegram for replies every 5 minutes (configurable per channel)
   cron.schedule('*/5 * * * *', async () => {
     await scheduleTelegramReplyPolling();
+  });
+
+  // Poll WhatsApp for replies every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    await scheduleWhatsAppReplyPolling();
   });
 
   // Daily cleanup at 3 AM
@@ -163,6 +170,7 @@ async function scheduleCampaignSteps() {
         lead: true,
         contact: true,
         prospect: true,
+        whatsappProspect: true,
       },
       take: 100, // Process in batches
     });
@@ -182,9 +190,14 @@ async function scheduleCampaignSteps() {
         tenantId: recipient.campaign.tenantId,
         priority: 2,
       });
-      const recipientInfo = recipient.prospect
-        ? `prospect: ${recipient.prospect.firstName || recipient.prospect.username || recipient.prospect.telegramUserId}`
-        : (recipient.contact?.email || 'no email');
+      let recipientInfo;
+      if (recipient.prospect) {
+        recipientInfo = `telegram prospect: ${recipient.prospect.firstName || recipient.prospect.username || recipient.prospect.telegramUserId}`;
+      } else if (recipient.whatsappProspect) {
+        recipientInfo = `whatsapp prospect: ${recipient.whatsappProspect.name || recipient.whatsappProspect.phone || recipient.whatsappProspect.whatsappUserId}`;
+      } else {
+        recipientInfo = recipient.contact?.email || recipient.contact?.phone || 'no contact info';
+      }
       logger.info(`Queued campaign step for recipient ${recipient.id} (${recipientInfo})`);
     }
 
@@ -353,6 +366,11 @@ async function handleCampaignStepJob(payload) {
           group: true,
         },
       },
+      whatsappProspect: {
+        include: {
+          group: true,
+        },
+      },
     },
   });
 
@@ -373,27 +391,43 @@ async function handleCampaignStepJob(payload) {
     return { completed: true };
   }
 
-  // Check if this is a prospect recipient
-  const isProspectRecipient = !!recipient.prospectId && !!recipient.prospect;
+  // Check if this is a prospect recipient (Telegram or WhatsApp)
+  const isTelegramProspect = !!recipient.prospectId && !!recipient.prospect;
+  const isWhatsAppProspect = !!recipient.whatsappProspectId && !!recipient.whatsappProspect;
+  const isProspectRecipient = isTelegramProspect || isWhatsAppProspect;
 
   logger.info(`Executing campaign step ${currentStep.stepOrder} for recipient ${recipientId}`, {
     channelType: currentStep.channelType,
     templateId: currentStep.templateId,
     contactEmail: recipient.contact?.email,
     contactPhone: recipient.contact?.phone,
-    isProspect: isProspectRecipient,
+    isTelegramProspect,
+    isWhatsAppProspect,
     prospectId: recipient.prospectId,
+    whatsappProspectId: recipient.whatsappProspectId,
   });
 
   // Build template context - for prospects, create a pseudo contact
-  const context = templateService.buildContext({
-    lead: recipient.lead,
-    contact: isProspectRecipient ? {
+  let prospectContact = null;
+  if (isTelegramProspect) {
+    prospectContact = {
       name: `${recipient.prospect.firstName || ''} ${recipient.prospect.lastName || ''}`.trim() || recipient.prospect.username,
       firstName: recipient.prospect.firstName,
       lastName: recipient.prospect.lastName,
       phone: recipient.prospect.phone,
-    } : recipient.contact,
+    };
+  } else if (isWhatsAppProspect) {
+    prospectContact = {
+      name: recipient.whatsappProspect.name || 'there',
+      firstName: recipient.whatsappProspect.name?.split(' ')[0] || '',
+      lastName: recipient.whatsappProspect.name?.split(' ').slice(1).join(' ') || '',
+      phone: recipient.whatsappProspect.phone,
+    };
+  }
+
+  const context = templateService.buildContext({
+    lead: recipient.lead,
+    contact: isProspectRecipient ? prospectContact : recipient.contact,
     sender: recipient.campaign.createdBy,
     tenant: recipient.campaign.tenant,
   });
@@ -432,12 +466,23 @@ async function handleCampaignStepJob(payload) {
         sendResult = await sendVoiceCall(credentials, recipient.contact, renderedBody);
         break;
       case 'WHATSAPP_WEB':
-        sendResult = await sendWhatsAppWeb(
-          recipient.campaign.tenantId,
-          currentStep.channelConfigId,
-          recipient.contact,
-          renderedBody
-        );
+        if (isWhatsAppProspect) {
+          // Send to WhatsApp prospect using their whatsappUserId
+          sendResult = await sendWhatsAppWebToProspect(
+            recipient.campaign.tenantId,
+            currentStep.channelConfigId,
+            recipient.whatsappProspect,
+            renderedBody
+          );
+        } else {
+          // Send to lead/contact with phone number
+          sendResult = await sendWhatsAppWeb(
+            recipient.campaign.tenantId,
+            currentStep.channelConfigId,
+            recipient.contact,
+            renderedBody
+          );
+        }
         break;
       case 'TELEGRAM':
         if (isProspectRecipient) {
@@ -769,6 +814,113 @@ async function sendWhatsAppWeb(tenantId, channelId, contact, body) {
 }
 
 /**
+ * Send WhatsApp Web message to a prospect
+ * Uses the prospect's whatsappUserId (phone-based ID)
+ */
+async function sendWhatsAppWebToProspect(tenantId, channelId, prospect, body) {
+  logger.info('sendWhatsAppWebToProspect - DEBUG prospect data:', {
+    prospectId: prospect.id,
+    whatsappUserId: prospect.whatsappUserId,
+    phone: prospect.phone,
+    name: prospect.name,
+  });
+
+  if (!prospect.whatsappUserId && !prospect.phone) {
+    return { success: false, error: 'Prospect has no WhatsApp user ID or phone' };
+  }
+
+  // Priority: Use phone field first (it's the validated phone number)
+  // Only extract from whatsappUserId if it's a @c.us format (not LID)
+  let phoneNumber = '';
+
+  // First, check if we have a valid phone in the phone field (7-15 digits)
+  if (prospect.phone) {
+    const cleanPhone = String(prospect.phone).replace(/[^\d]/g, '');
+    if (/^\d{7,15}$/.test(cleanPhone)) {
+      phoneNumber = cleanPhone;
+    }
+  }
+
+  // If no valid phone, try to extract from whatsappUserId (only if it's @c.us format, NOT @lid)
+  if (!phoneNumber && prospect.whatsappUserId) {
+    const userId = prospect.whatsappUserId;
+    // Only use whatsappUserId if it's @c.us format (real phone-based ID)
+    if (userId.includes('@c.us')) {
+      const extracted = userId.split('@')[0];
+      if (/^\d{7,15}$/.test(extracted)) {
+        phoneNumber = extracted;
+      }
+    }
+  }
+
+  // Final cleanup
+  phoneNumber = phoneNumber.replace(/[^\d]/g, '');
+
+  logger.info('sendWhatsAppWebToProspect - Final phone number to send:', {
+    prospectId: prospect.id,
+    originalWhatsappUserId: prospect.whatsappUserId,
+    originalPhone: prospect.phone,
+    finalPhoneNumber: phoneNumber,
+  });
+
+  // Random delay between 5-30 seconds to appear human-like
+  const delay = Math.floor(Math.random() * 25000) + 5000;
+  logger.info(`WhatsApp Web prospect: waiting ${delay}ms before sending`, { to: phoneNumber, prospectId: prospect.id });
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  // sendMessage will auto-reconnect if session exists
+  const result = await whatsappWebService.sendMessage(
+    tenantId,
+    channelId,
+    phoneNumber,
+    body
+  );
+
+  if (result.success) {
+    logger.info('Campaign WhatsApp Web message sent to prospect', {
+      to: phoneNumber,
+      prospectId: prospect.id,
+      messageId: result.messageId,
+      delay: delay,
+    });
+
+    // Update prospect status to MESSAGED and record message
+    try {
+      await prisma.whatsAppProspect.update({
+        where: { id: prospect.id },
+        data: {
+          status: 'MESSAGED',
+          lastMessagedAt: new Date(),
+        },
+      });
+
+      // Record the outbound message
+      await prisma.whatsAppProspectMessage.create({
+        data: {
+          prospectId: prospect.id,
+          direction: 'OUTBOUND',
+          content: body,
+          whatsappMsgId: result.messageId?.toString(),
+          sentAt: new Date(),
+        },
+      });
+
+      logger.info('WhatsApp prospect status updated to MESSAGED', { prospectId: prospect.id });
+    } catch (updateError) {
+      logger.error('Failed to update WhatsApp prospect status', { error: updateError.message, prospectId: prospect.id });
+    }
+  } else {
+    logger.error('Campaign WhatsApp Web send to prospect failed', {
+      to: phoneNumber,
+      prospectId: prospect.id,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
+/**
  * Send Telegram message
  * Uses telegramId or username stored in lead's customFields
  */
@@ -1017,6 +1169,93 @@ async function handleTelegramReplyPollJob(payload) {
     return result;
   } catch (error) {
     logger.error('Telegram reply poll failed', { channelConfigId, error: error.message });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Schedule WhatsApp reply polling for all enabled channels
+ */
+async function scheduleWhatsAppReplyPolling() {
+  try {
+    // Get all active WHATSAPP_WEB channels
+    const whatsappChannels = await prisma.channelConfig.findMany({
+      where: {
+        channelType: 'WHATSAPP_WEB',
+        isActive: true,
+      },
+      include: {
+        tenant: { select: { id: true, status: true } },
+      },
+    });
+
+    for (const channel of whatsappChannels) {
+      // Skip if tenant is not active
+      if (channel.tenant?.status !== 'ACTIVE') continue;
+
+      // Check if reply polling is enabled in settings (default to true)
+      const settings = channel.settings || {};
+      const pollingEnabled = settings.replyPolling?.enabled !== false;
+
+      if (!pollingEnabled) continue;
+
+      // Check interval (default 5 minutes)
+      const intervalMinutes = settings.replyPolling?.intervalMinutes || 5;
+
+      if (intervalMinutes > 5) {
+        const currentMinute = new Date().getMinutes();
+        if (currentMinute % intervalMinutes !== 0) continue;
+      }
+
+      // Queue polling job
+      await queueService.addJob('WHATSAPP_REPLY_POLL', {
+        channelConfigId: channel.id,
+      }, {
+        tenantId: channel.tenantId,
+        priority: 3,
+      });
+
+      logger.debug(`Scheduled WhatsApp reply poll for channel ${channel.id}`);
+    }
+  } catch (error) {
+    logger.error('Failed to schedule WhatsApp reply polling', { error: error.message });
+  }
+}
+
+/**
+ * Handle WhatsApp reply polling job
+ */
+async function handleWhatsAppReplyPollJob(payload) {
+  const { channelConfigId } = payload;
+
+  const channel = await prisma.channelConfig.findUnique({
+    where: { id: channelConfigId },
+  });
+
+  if (!channel || channel.channelType !== 'WHATSAPP_WEB') {
+    return { skipped: true, reason: 'Channel not found or not WhatsApp Web type' };
+  }
+
+  // Get auto-convert setting
+  const autoConvert = channel.settings?.autoConvert?.enabled || false;
+
+  try {
+    const result = await whatsappProspectsService.pollReplies(
+      channelConfigId,
+      channel.tenantId,
+      autoConvert,
+      channel.createdBy // Use channel creator as default for lead creation
+    );
+
+    logger.info('WhatsApp reply poll completed', {
+      channelConfigId,
+      repliesFound: result.repliesFound,
+      prospectsChecked: result.prospectsChecked,
+    });
+
+    return result;
+  } catch (error) {
+    logger.error('WhatsApp reply poll failed', { channelConfigId, error: error.message });
     return { success: false, error: error.message };
   }
 }

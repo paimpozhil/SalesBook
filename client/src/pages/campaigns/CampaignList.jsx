@@ -103,6 +103,11 @@ function CampaignList() {
   const [selectedProspectGroups, setSelectedProspectGroups] = useState([]);
   const [loadingProspects, setLoadingProspects] = useState(false);
 
+  // WhatsApp Prospect groups state (for WhatsApp Web campaigns)
+  const [whatsappProspectGroups, setWhatsappProspectGroups] = useState([]);
+  const [selectedWhatsappProspectGroups, setSelectedWhatsappProspectGroups] = useState([]);
+  const [loadingWhatsappProspects, setLoadingWhatsappProspects] = useState(false);
+
   // Start campaign modal state
   const [showStartModal, setShowStartModal] = useState(false);
   const [campaignToStart, setCampaignToStart] = useState(null);
@@ -235,6 +240,18 @@ function CampaignList() {
     }
   };
 
+  const fetchWhatsappProspectGroups = async () => {
+    setLoadingWhatsappProspects(true);
+    try {
+      const response = await api.get('/whatsapp-prospects/groups');
+      setWhatsappProspectGroups(response.data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch WhatsApp prospect groups:', error);
+    } finally {
+      setLoadingWhatsappProspects(false);
+    }
+  };
+
   // Check if campaign uses TELEGRAM channel
   const campaignUsesTelegram = (campaign) => {
     if (!campaign?.steps) return false;
@@ -246,6 +263,20 @@ function CampaignList() {
       // Fallback: look up in channels list
       const channel = channels.find(ch => ch.id === step.channelConfigId);
       return channel?.channelType === 'TELEGRAM';
+    });
+  };
+
+  // Check if campaign uses WHATSAPP_WEB channel
+  const campaignUsesWhatsApp = (campaign) => {
+    if (!campaign?.steps) return false;
+    return campaign.steps.some(step => {
+      // Check channelConfig from step (when full campaign data is loaded)
+      if (step.channelConfig?.channelType === 'WHATSAPP_WEB') return true;
+      // Fallback: check channelType directly on step
+      if (step.channelType === 'WHATSAPP_WEB') return true;
+      // Fallback: look up in channels list
+      const channel = channels.find(ch => ch.id === step.channelConfigId);
+      return channel?.channelType === 'WHATSAPP_WEB';
     });
   };
 
@@ -279,6 +310,7 @@ function CampaignList() {
   const openRecipientsModal = async (campaign) => {
     setSelectedLeads([]);
     setSelectedProspectGroups([]);
+    setSelectedWhatsappProspectGroups([]);
     setRecipientFilters({
       status: [],
       industryIds: [],
@@ -303,6 +335,10 @@ function CampaignList() {
       if (campaignUsesTelegram(fullCampaign)) {
         fetchProspectGroups();
       }
+      // Fetch prospect groups for WHATSAPP_WEB campaigns
+      if (campaignUsesWhatsApp(fullCampaign)) {
+        fetchWhatsappProspectGroups();
+      }
     } catch (error) {
       console.error('Failed to fetch campaign details:', error);
       setSelectedCampaign(campaign); // Fallback to partial data
@@ -317,6 +353,8 @@ function CampaignList() {
     setSelectedLeads([]);
     setSelectedProspectGroups([]);
     setProspectGroups([]);
+    setSelectedWhatsappProspectGroups([]);
+    setWhatsappProspectGroups([]);
     setExistingRecipients([]);
     setRecipientModalTab('add');
     setRecipientFilters({
@@ -420,22 +458,32 @@ function CampaignList() {
     }
   };
 
-  const handleAddProspectRecipients = async () => {
-    if (selectedProspectGroups.length === 0) {
-      toast.error('Please select at least one prospect group');
+  const handleAddProspectRecipients = async (type = 'telegram') => {
+    if (type === 'telegram' && selectedProspectGroups.length === 0) {
+      toast.error('Please select at least one Telegram prospect group');
+      return;
+    }
+    if (type === 'whatsapp' && selectedWhatsappProspectGroups.length === 0) {
+      toast.error('Please select at least one WhatsApp prospect group');
       return;
     }
 
     setAddingRecipients(true);
     try {
-      const response = await api.post(`/campaigns/${selectedCampaign.id}/recipients`, {
-        prospectGroupIds: selectedProspectGroups,
-      });
+      const payload = type === 'telegram'
+        ? { prospectGroupIds: selectedProspectGroups }
+        : { whatsappProspectGroupIds: selectedWhatsappProspectGroups };
+
+      const response = await api.post(`/campaigns/${selectedCampaign.id}/recipients`, payload);
       toast.success(response.data.data.message || 'Prospect recipients added');
       // Refresh existing recipients and switch to that tab
       fetchExistingRecipients(selectedCampaign.id);
       setRecipientModalTab('existing');
-      setSelectedProspectGroups([]);
+      if (type === 'telegram') {
+        setSelectedProspectGroups([]);
+      } else {
+        setSelectedWhatsappProspectGroups([]);
+      }
       fetchCampaigns();
     } catch (error) {
       console.error('Failed to add prospect recipients:', error);
@@ -1213,9 +1261,20 @@ function CampaignList() {
                 variant={recipientModalTab === 'prospects' ? 'info' : 'outline-info'}
                 onClick={() => setRecipientModalTab('prospects')}
               >
-                <FaTelegram className="me-1" /> Add from Prospects
+                <FaTelegram className="me-1" /> Telegram Prospects
                 {prospectGroups.length > 0 && (
                   <Badge bg="light" text="dark" className="ms-2">{prospectGroups.length} groups</Badge>
+                )}
+              </Button>
+            )}
+            {campaignUsesWhatsApp(selectedCampaign) && (
+              <Button
+                variant={recipientModalTab === 'whatsapp_prospects' ? 'success' : 'outline-success'}
+                onClick={() => setRecipientModalTab('whatsapp_prospects')}
+              >
+                <FaWhatsapp className="me-1" /> WhatsApp Prospects
+                {whatsappProspectGroups.length > 0 && (
+                  <Badge bg="light" text="dark" className="ms-2">{whatsappProspectGroups.length} groups</Badge>
                 )}
               </Button>
             )}
@@ -1275,6 +1334,9 @@ function CampaignList() {
                                   {recipient.telegramUserId && (
                                     <small className="text-muted d-block">@{recipient.telegramUserId}</small>
                                   )}
+                                  {recipient.prospectPhone && (
+                                    <small className="text-muted d-block">{recipient.prospectPhone}</small>
+                                  )}
                                 </>
                               ) : (
                                 recipient.contact?.name || '-'
@@ -1282,7 +1344,11 @@ function CampaignList() {
                             </td>
                             <td className="small text-muted">
                               {recipient.isProspect ? (
-                                <span><FaTelegram className="me-1" />Telegram</span>
+                                recipient.prospectType === 'whatsapp' ? (
+                                  <span><FaWhatsapp className="me-1 text-success" />WhatsApp</span>
+                                ) : (
+                                  <span><FaTelegram className="me-1 text-info" />Telegram</span>
+                                )
                               ) : (
                                 recipient.contact?.email || '-'
                               )}
@@ -1680,6 +1746,94 @@ function CampaignList() {
               )}
             </>
           )}
+
+          {/* WhatsApp Prospects Tab - for WHATSAPP_WEB campaigns */}
+          {recipientModalTab === 'whatsapp_prospects' && (
+            <>
+              <Alert variant="info" className="mb-3">
+                <FaWhatsapp className="me-2" />
+                Select WhatsApp prospect groups to add as campaign recipients.
+                All prospects in the selected groups will be added to the campaign.
+              </Alert>
+
+              {loadingWhatsappProspects ? (
+                <div className="text-center py-4">
+                  <FaSpinner className="fa-spin me-2" /> Loading WhatsApp prospect groups...
+                </div>
+              ) : whatsappProspectGroups.length === 0 ? (
+                <Alert variant="warning">
+                  No WhatsApp prospect groups found. Import prospects from WhatsApp groups first in the Prospects section.
+                </Alert>
+              ) : (
+                <>
+                  <div className="d-flex justify-content-between mb-3">
+                    <Button
+                      variant="link"
+                      onClick={() => {
+                        if (selectedWhatsappProspectGroups.length === whatsappProspectGroups.length) {
+                          setSelectedWhatsappProspectGroups([]);
+                        } else {
+                          setSelectedWhatsappProspectGroups(whatsappProspectGroups.map(g => g.id));
+                        }
+                      }}
+                      className="p-0"
+                    >
+                      {selectedWhatsappProspectGroups.length === whatsappProspectGroups.length ? 'Deselect All' : 'Select All'}
+                    </Button>
+                    <span className="text-muted">
+                      {selectedWhatsappProspectGroups.length} of {whatsappProspectGroups.length} groups selected
+                    </span>
+                  </div>
+
+                  <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                    <ListGroup>
+                      {whatsappProspectGroups.map((group) => (
+                        <ListGroup.Item
+                          key={group.id}
+                          action
+                          active={selectedWhatsappProspectGroups.includes(group.id)}
+                          onClick={() => {
+                            setSelectedWhatsappProspectGroups(prev =>
+                              prev.includes(group.id)
+                                ? prev.filter(id => id !== group.id)
+                                : [...prev, group.id]
+                            );
+                          }}
+                          className="d-flex justify-content-between align-items-center"
+                        >
+                          <div>
+                            <strong>{group.name}</strong>
+                            {group.whatsappGroupName && (
+                              <small className="text-muted ms-2">
+                                (from: {group.whatsappGroupName})
+                              </small>
+                            )}
+                          </div>
+                          <div>
+                            <Badge bg={selectedWhatsappProspectGroups.includes(group.id) ? 'light' : 'success'} text={selectedWhatsappProspectGroups.includes(group.id) ? 'dark' : 'white'} className="me-2">
+                              {group.prospectCount || group._count?.prospects || 0} prospects
+                            </Badge>
+                          </div>
+                        </ListGroup.Item>
+                      ))}
+                    </ListGroup>
+                  </div>
+
+                  {/* Summary */}
+                  {selectedWhatsappProspectGroups.length > 0 && (
+                    <Alert variant="success" className="mt-3 mb-0">
+                      <strong>
+                        {selectedWhatsappProspectGroups.reduce((total, groupId) => {
+                          const group = whatsappProspectGroups.find(g => g.id === groupId);
+                          return total + (group?.prospectCount || group?._count?.prospects || 0);
+                        }, 0)}
+                      </strong> prospects from {selectedWhatsappProspectGroups.length} group(s) will be added.
+                    </Alert>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={closeRecipientsModal}>
@@ -1697,10 +1851,19 @@ function CampaignList() {
           {recipientModalTab === 'prospects' && selectedProspectGroups.length > 0 && (
             <Button
               variant="info"
-              onClick={() => handleAddProspectRecipients()}
+              onClick={() => handleAddProspectRecipients('telegram')}
               disabled={addingRecipients}
             >
-              {addingRecipients ? 'Adding...' : `Add ${selectedProspectGroups.length} Group(s)`}
+              {addingRecipients ? 'Adding...' : `Add ${selectedProspectGroups.length} Telegram Group(s)`}
+            </Button>
+          )}
+          {recipientModalTab === 'whatsapp_prospects' && selectedWhatsappProspectGroups.length > 0 && (
+            <Button
+              variant="success"
+              onClick={() => handleAddProspectRecipients('whatsapp')}
+              disabled={addingRecipients}
+            >
+              {addingRecipients ? 'Adding...' : `Add ${selectedWhatsappProspectGroups.length} WhatsApp Group(s)`}
             </Button>
           )}
         </Modal.Footer>
@@ -2035,11 +2198,15 @@ function CampaignList() {
                             <td>
                               {recipient.isProspect ? (
                                 <>
-                                  <Badge bg="info" className="me-1">P</Badge>
+                                  <Badge bg={recipient.prospectType === 'whatsapp' ? 'success' : 'info'} className="me-1">P</Badge>
                                   <strong>{recipient.prospectName || 'Unknown'}</strong>
                                   <br />
                                   <small className="text-muted">
-                                    <FaTelegram className="me-1" />Telegram
+                                    {recipient.prospectType === 'whatsapp' ? (
+                                      <><FaWhatsapp className="me-1" />WhatsApp {recipient.prospectPhone && `(${recipient.prospectPhone})`}</>
+                                    ) : (
+                                      <><FaTelegram className="me-1" />Telegram</>
+                                    )}
                                   </small>
                                 </>
                               ) : (

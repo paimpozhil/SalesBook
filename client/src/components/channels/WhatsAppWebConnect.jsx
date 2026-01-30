@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Button, Badge, Spinner, Alert, Card } from 'react-bootstrap';
+import { Button, Badge, Spinner, Alert, Card, Form, Collapse } from 'react-bootstrap';
 import { QRCodeSVG } from 'qrcode.react';
-import { FaWhatsapp, FaQrcode, FaCheckCircle, FaTimesCircle, FaSync, FaTrash } from 'react-icons/fa';
+import { FaWhatsapp, FaQrcode, FaCheckCircle, FaTimesCircle, FaSync, FaTrash, FaCog, FaChevronDown, FaChevronUp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 
@@ -20,15 +20,55 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
   const [error, setError] = useState(null);
   const pollInterval = useRef(null);
 
-  // Check connection status on mount
+  // Settings state
+  const [showSettings, setShowSettings] = useState(false);
+  const [settings, setSettings] = useState({
+    replyPolling: { enabled: true, intervalMinutes: 5 },
+    autoConvert: { enabled: false },
+  });
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  // Check connection status on mount and load settings
   useEffect(() => {
     checkStatus();
+    loadSettings();
     return () => {
       if (pollInterval.current) {
         clearInterval(pollInterval.current);
       }
     };
   }, [channelId]);
+
+  const loadSettings = async () => {
+    try {
+      const response = await api.get(`/channels/${channelId}`);
+      const channelSettings = response.data.data.settings || {};
+      setSettings({
+        replyPolling: {
+          enabled: channelSettings.replyPolling?.enabled !== false,
+          intervalMinutes: channelSettings.replyPolling?.intervalMinutes || 5,
+        },
+        autoConvert: {
+          enabled: channelSettings.autoConvert?.enabled || false,
+        },
+      });
+    } catch (err) {
+      console.error('Failed to load channel settings:', err);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await api.patch(`/channels/${channelId}`, { settings });
+      toast.success('Settings saved successfully');
+    } catch (err) {
+      toast.error('Failed to save settings');
+      console.error('Failed to save settings:', err);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   const checkStatus = async () => {
     try {
@@ -308,6 +348,104 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
               <p className="text-muted small mt-1 mb-0">
                 Permanently removes session. You must scan QR again. Stops all campaigns.
               </p>
+            </div>
+
+            {/* Settings Section */}
+            <div className="mt-4 pt-3 border-top">
+              <Button
+                variant="link"
+                className="p-0 text-decoration-none d-flex align-items-center"
+                onClick={() => setShowSettings(!showSettings)}
+              >
+                <FaCog className="me-2" />
+                <span>Prospect Settings</span>
+                {showSettings ? <FaChevronUp className="ms-2" /> : <FaChevronDown className="ms-2" />}
+              </Button>
+
+              <Collapse in={showSettings}>
+                <div className="mt-3">
+                  <Form>
+                    {/* Reply Polling Settings */}
+                    <Form.Group className="mb-3">
+                      <Form.Check
+                        type="switch"
+                        id="replyPolling"
+                        label="Enable Reply Polling"
+                        checked={settings.replyPolling.enabled}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            replyPolling: { ...settings.replyPolling, enabled: e.target.checked },
+                          })
+                        }
+                      />
+                      <Form.Text className="text-muted">
+                        Automatically check for replies from messaged prospects
+                      </Form.Text>
+                    </Form.Group>
+
+                    {settings.replyPolling.enabled && (
+                      <Form.Group className="mb-3 ms-4">
+                        <Form.Label className="small">Polling Interval (minutes)</Form.Label>
+                        <Form.Select
+                          size="sm"
+                          value={settings.replyPolling.intervalMinutes}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              replyPolling: { ...settings.replyPolling, intervalMinutes: parseInt(e.target.value) },
+                            })
+                          }
+                          style={{ width: '120px' }}
+                        >
+                          <option value={5}>5 min</option>
+                          <option value={10}>10 min</option>
+                          <option value={15}>15 min</option>
+                          <option value={30}>30 min</option>
+                          <option value={60}>60 min</option>
+                        </Form.Select>
+                      </Form.Group>
+                    )}
+
+                    {/* Auto-Convert Settings */}
+                    <Form.Group className="mb-3">
+                      <Form.Check
+                        type="switch"
+                        id="autoConvert"
+                        label="Auto-Convert on Reply"
+                        checked={settings.autoConvert.enabled}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            autoConvert: { ...settings.autoConvert, enabled: e.target.checked },
+                          })
+                        }
+                      />
+                      <Form.Text className="text-muted">
+                        Automatically convert prospects to leads when they reply
+                      </Form.Text>
+                    </Form.Group>
+
+                    <div className="d-flex justify-content-end">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={saveSettings}
+                        disabled={savingSettings}
+                      >
+                        {savingSettings ? (
+                          <>
+                            <Spinner size="sm" className="me-1" />
+                            Saving...
+                          </>
+                        ) : (
+                          'Save Settings'
+                        )}
+                      </Button>
+                    </div>
+                  </Form>
+                </div>
+              </Collapse>
             </div>
           </div>
         )}

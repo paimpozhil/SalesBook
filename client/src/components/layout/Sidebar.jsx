@@ -11,7 +11,7 @@ import {
   FaCog,
   FaUsersCog,
   FaTimes,
-  FaTelegram,
+  FaUserFriends,
 } from 'react-icons/fa';
 import useAuthStore from '../../store/authStore';
 
@@ -21,7 +21,7 @@ const navItems = [
     items: [
       { path: '/', icon: FaHome, label: 'Dashboard' },
       { path: '/leads', icon: FaUsers, label: 'Leads' },
-      { path: '/prospects', icon: FaTelegram, label: 'Prospects' },
+      { path: '/prospects', icon: FaUserFriends, label: 'Prospects' },
       { path: '/campaigns', icon: FaBullhorn, label: 'Campaigns' },
       { path: '/conversations', icon: FaComments, label: 'Conversations' },
     ],

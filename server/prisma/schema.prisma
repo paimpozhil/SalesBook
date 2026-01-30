@@ -39,6 +39,7 @@ model Tenant {
   positions      Position[]
   notes          Note[]
   telegramProspectGroups TelegramProspectGroup[]
+  whatsappProspectGroups WhatsAppProspectGroup[]
 
   @@map("tenants")
 }
@@ -138,6 +139,7 @@ model Lead {
   industries        LeadIndustry[]
   notes             Note[]
   convertedFromProspects TelegramProspect[]
+  convertedFromWhatsAppProspects WhatsAppProspect[]
 
   @@index([tenantId])
   @@index([status])
@@ -359,6 +361,7 @@ model ChannelConfig {
   campaignSteps   CampaignStep[]
   contactAttempts ContactAttempt[]
   telegramProspectGroups TelegramProspectGroup[]
+  whatsappProspectGroups WhatsAppProspectGroup[]
 
   @@index([tenantId])
   @@index([channelType])
@@ -429,6 +432,7 @@ model Campaign {
   contactAttempts ContactAttempt[]
   analyticsDaily AnalyticsDaily[]
   telegramProspectMessages TelegramProspectMessage[]
+  whatsappProspectMessages WhatsAppProspectMessage[]
 
   @@index([tenantId])
   @@index([status])
@@ -473,29 +477,33 @@ model CampaignStep {
 }
 
 model CampaignRecipient {
-  id           Int                      @id @default(autoincrement())
-  campaignId   Int                      @map("campaign_id")
-  leadId       Int?                     @map("lead_id")
-  contactId    Int?                     @map("contact_id")
-  prospectId   Int?                     @map("prospect_id")
-  currentStep  Int                      @default(1) @map("current_step")
-  status       CampaignRecipientStatus  @default(PENDING)
-  nextActionAt DateTime?                @map("next_action_at")
-  metadata     Json?
-  createdAt    DateTime                 @default(now()) @map("created_at")
-  updatedAt    DateTime                 @updatedAt @map("updated_at")
+  id                  Int                      @id @default(autoincrement())
+  campaignId          Int                      @map("campaign_id")
+  leadId              Int?                     @map("lead_id")
+  contactId           Int?                     @map("contact_id")
+  prospectId          Int?                     @map("prospect_id")
+  whatsappProspectId  Int?                     @map("whatsapp_prospect_id")
+  currentStep         Int                      @default(1) @map("current_step")
+  status              CampaignRecipientStatus  @default(PENDING)
+  nextActionAt        DateTime?                @map("next_action_at")
+  metadata            Json?
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
 
   // Relations
-  campaign Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  lead     Lead?             @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  contact  Contact?          @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  prospect TelegramProspect? @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  campaign         Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead             Lead?             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contact          Contact?          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  prospect         TelegramProspect? @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  whatsappProspect WhatsAppProspect? @relation(fields: [whatsappProspectId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, leadId, contactId])
   @@unique([campaignId, prospectId])
+  @@unique([campaignId, whatsappProspectId])
   @@index([campaignId])
   @@index([leadId])
   @@index([prospectId])
+  @@index([whatsappProspectId])
   @@index([status])
   @@index([nextActionAt])
   @@map("campaign_recipients")
@@ -654,6 +662,7 @@ enum JobType {
   EMAIL_SEND
   SMS_SEND
   TELEGRAM_REPLY_POLL
+  WHATSAPP_REPLY_POLL
 }
 
 enum JobStatus {
@@ -776,4 +785,86 @@ model TelegramProspectMessage {
   @@index([prospectId])
   @@index([campaignId])
   @@map("telegram_prospect_messages")
+}
+
+// ===========================================
+// WhatsApp Prospects
+// ===========================================
+
+enum WhatsAppProspectStatus {
+  PENDING
+  MESSAGED
+  REPLIED
+  CONVERTED
+}
+
+model WhatsAppProspectGroup {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int       @map("tenant_id")
+  channelConfigId   Int       @map("channel_config_id")
+  name              String    @db.VarChar(255)  // User-provided custom name
+  whatsappGroupId   String    @map("whatsapp_group_id") @db.VarChar(100)
+  whatsappGroupName String?   @map("whatsapp_group_name") @db.VarChar(255)
+  prospectCount     Int       @default(0) @map("prospect_count")
+  createdById       Int?      @map("created_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  channelConfig ChannelConfig @relation(fields: [channelConfigId], references: [id], onDelete: Cascade)
+  prospects     WhatsAppProspect[]
+
+  @@unique([tenantId, channelConfigId, whatsappGroupId])
+  @@index([tenantId])
+  @@index([channelConfigId])
+  @@map("whatsapp_prospect_groups")
+}
+
+model WhatsAppProspect {
+  id              Int                     @id @default(autoincrement())
+  tenantId        Int                     @map("tenant_id")
+  groupId         Int                     @map("group_id")
+  whatsappUserId  String                  @map("whatsapp_user_id") @db.VarChar(100)
+  name            String?                 @db.VarChar(255)
+  phone           String?                 @db.VarChar(50)
+  isAdmin         Boolean                 @default(false) @map("is_admin")
+  status          WhatsAppProspectStatus  @default(PENDING)
+  lastMessagedAt  DateTime?               @map("last_messaged_at")
+  lastRepliedAt   DateTime?               @map("last_replied_at")
+  convertedLeadId Int?                    @map("converted_lead_id")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  // Relations
+  group              WhatsAppProspectGroup     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  convertedLead      Lead?                     @relation(fields: [convertedLeadId], references: [id], onDelete: SetNull)
+  messages           WhatsAppProspectMessage[]
+  campaignRecipients CampaignRecipient[]
+
+  @@unique([tenantId, groupId, whatsappUserId])
+  @@index([tenantId])
+  @@index([groupId])
+  @@index([status])
+  @@index([convertedLeadId])
+  @@map("whatsapp_prospects")
+}
+
+model WhatsAppProspectMessage {
+  id              Int               @id @default(autoincrement())
+  prospectId      Int               @map("prospect_id")
+  direction       MessageDirection
+  content         String            @db.Text
+  whatsappMsgId   String?           @map("whatsapp_msg_id") @db.VarChar(100)
+  campaignId      Int?              @map("campaign_id")
+  sentAt          DateTime?         @map("sent_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  prospect WhatsAppProspect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  campaign Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([prospectId])
+  @@index([campaignId])
+  @@map("whatsapp_prospect_messages")
 }
