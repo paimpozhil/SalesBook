@@ -328,7 +328,7 @@ class TelegramProspectsService {
         tenantId,
         isDeleted: false,
         customFields: {
-          path: ['telegramUserId'],
+          path: '$.telegramUserId',
           equals: prospect.telegramUserId,
         },
       },
