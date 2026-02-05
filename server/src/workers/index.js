@@ -688,15 +688,47 @@ async function sendEmailSmtp(credentials, contact, subject, body) {
     },
   });
 
+  // Convert plain text line breaks to HTML <br> tags
+  // and wrap in a basic HTML template for proper rendering
+  const htmlBody = formatEmailBody(body);
+
   const result = await transporter.sendMail({
     from: credentials.from || credentials.user,
     to: contact.email,
     subject,
-    html: body,
+    html: htmlBody,
+    text: body, // Also include plain text version
   });
 
   logger.info('Campaign email sent', { to: contact.email, messageId: result.messageId });
   return { success: true, messageId: result.messageId };
+}
+
+/**
+ * Format email body - convert newlines to <br> and wrap in HTML
+ */
+function formatEmailBody(body) {
+  // If body already contains HTML tags, assume it's already formatted
+  if (/<[a-z][\s\S]*>/i.test(body)) {
+    return body;
+  }
+
+  // Convert newlines to <br> tags for plain text
+  const formattedBody = body
+    .replace(/\r\n/g, '\n')  // Normalize line endings
+    .replace(/\n/g, '<br>\n'); // Convert to HTML breaks
+
+  // Wrap in a simple HTML template
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">
+  ${formattedBody}
+</body>
+</html>`;
 }
 
 /**
