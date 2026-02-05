@@ -30,6 +30,7 @@ const tenantRoutes = require('./routes/tenants');
 const telegramRoutes = require('./routes/telegram');
 const telegramProspectsRoutes = require('./routes/telegramProspects');
 const whatsappProspectsRoutes = require('./routes/whatsappProspects');
+const aiRoutes = require('./routes/ai');
 
 // Initialize express app
 const app = express();
@@ -127,6 +128,7 @@ app.use('/api/v1/tenants', tenantRoutes);
 app.use('/api/v1/telegram', telegramRoutes);
 app.use('/api/v1/telegram-prospects', telegramProspectsRoutes);
 app.use('/api/v1/whatsapp-prospects', whatsappProspectsRoutes);
+app.use('/api/v1/ai', aiRoutes);
 
 // Serve static files in production
 if (config.env === 'production') {

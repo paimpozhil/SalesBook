@@ -88,4 +88,10 @@ module.exports = {
     timeout: parseInt(process.env.SCRAPER_TIMEOUT, 10) || 30000,
     concurrency: parseInt(process.env.SCRAPER_CONCURRENCY, 10) || 2,
   },
+
+  // OpenAI
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY,
+    model: 'gpt-4o-mini',
+  },
 };

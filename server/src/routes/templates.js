@@ -47,8 +47,10 @@ router.get(
           name: true,
           channelType: true,
           subject: true,
+          useAi: true,
           createdAt: true,
           createdBy: { select: { id: true, name: true } },
+          _count: { select: { variations: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -77,10 +79,13 @@ router.post(
     ]),
     body('subject').optional({ nullable: true }),
     body('body').notEmpty(),
+    body('useAi').optional().isBoolean(),
+    body('aiPrompt').optional({ nullable: true }),
+    body('variations').optional().isArray(),
     validate,
   ],
   asyncHandler(async (req, res) => {
-    const { name, channelType, subject, body: templateBody, attachments } = req.body;
+    const { name, channelType, subject, body: templateBody, attachments, useAi, aiPrompt, variations } = req.body;
 
     const template = await prisma.template.create({
       data: {
@@ -90,7 +95,22 @@ router.post(
         subject,
         body: templateBody,
         attachments,
+        useAi: useAi || false,
+        aiPrompt: aiPrompt || null,
         createdById: req.user.id,
+        // Create variations if provided
+        ...(variations && variations.length > 0 && {
+          variations: {
+            create: variations.map((v, index) => ({
+              subject: v.subject || null,
+              body: v.body,
+              sortOrder: v.sortOrder ?? index,
+            })),
+          },
+        }),
+      },
+      include: {
+        variations: true,
       },
     });
 
@@ -112,6 +132,9 @@ router.get(
       where: addTenantFilter(req, { id: req.params.id }),
       include: {
         createdBy: { select: { id: true, name: true } },
+        variations: {
+          orderBy: { sortOrder: 'asc' },
+        },
       },
     });
 
@@ -131,13 +154,33 @@ router.patch(
   requirePermission('templates:update'),
   [param('id').isInt().toInt(), validate],
   asyncHandler(async (req, res) => {
-    const { name, subject, body: templateBody, attachments } = req.body;
+    const { name, subject, body: templateBody, attachments, useAi, aiPrompt, variations } = req.body;
 
     const existing = await prisma.template.findFirst({
       where: addTenantFilter(req, { id: req.params.id }),
     });
 
     if (!existing) throw AppError.notFound('Template not found');
+
+    // If variations are provided, replace all existing variations
+    if (variations !== undefined) {
+      // Delete existing variations
+      await prisma.templateVariation.deleteMany({
+        where: { templateId: req.params.id },
+      });
+
+      // Create new variations if array is not empty
+      if (Array.isArray(variations) && variations.length > 0) {
+        await prisma.templateVariation.createMany({
+          data: variations.map((v, index) => ({
+            templateId: req.params.id,
+            subject: v.subject || null,
+            body: v.body,
+            sortOrder: v.sortOrder ?? index,
+          })),
+        });
+      }
+    }
 
     const template = await prisma.template.update({
       where: { id: req.params.id },
@@ -146,6 +189,13 @@ router.patch(
         ...(subject !== undefined && { subject }),
         ...(templateBody && { body: templateBody }),
         ...(attachments !== undefined && { attachments }),
+        ...(useAi !== undefined && { useAi }),
+        ...(aiPrompt !== undefined && { aiPrompt }),
+      },
+      include: {
+        variations: {
+          orderBy: { sortOrder: 'asc' },
+        },
       },
     });
 

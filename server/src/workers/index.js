@@ -350,7 +350,11 @@ async function handleCampaignStepJob(payload) {
         include: {
           steps: {
             include: {
-              template: true,
+              template: {
+                include: {
+                  variations: true,
+                },
+              },
               channelConfig: true,
             },
             orderBy: { stepOrder: 'asc' },
@@ -432,9 +436,17 @@ async function handleCampaignStepJob(payload) {
     tenant: recipient.campaign.tenant,
   });
 
+  // Get template content (handles AI variations)
+  const templateContent = templateService.getTemplateContent(currentStep.template || {});
+
   // Render template
-  const renderedSubject = templateService.render(currentStep.template?.subject || '', context);
-  const renderedBody = templateService.render(currentStep.template?.body || '', context);
+  const renderedSubject = templateService.render(templateContent.subject || '', context);
+  const renderedBody = templateService.render(templateContent.body || '', context);
+
+  // Log if a variation was used
+  if (templateContent.variationId) {
+    logger.info(`Using AI variation ${templateContent.variationId} for recipient ${recipientId}`);
+  }
 
   // Decrypt channel credentials
   let credentials;

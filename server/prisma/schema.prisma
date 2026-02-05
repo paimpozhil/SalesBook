@@ -391,18 +391,36 @@ model Template {
   subject     String?     @db.VarChar(500)
   body        String      @db.LongText
   attachments Json?       @db.Json
+  useAi       Boolean     @default(false) @map("use_ai")
+  aiPrompt    String?     @map("ai_prompt") @db.Text
   createdById Int?        @map("created_by")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
   // Relations
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy     User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User?               @relation(fields: [createdById], references: [id], onDelete: SetNull)
   campaignSteps CampaignStep[]
+  variations    TemplateVariation[]
 
   @@index([tenantId])
   @@index([channelType])
   @@map("templates")
+}
+
+model TemplateVariation {
+  id         Int      @id @default(autoincrement())
+  templateId Int      @map("template_id")
+  subject    String?  @db.VarChar(500)
+  body       String   @db.LongText
+  sortOrder  Int      @default(0) @map("sort_order")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@map("template_variations")
 }
 
 // ===========================================

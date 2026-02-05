@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Card, Row, Col, Form, Button, Tab, Nav, Table, Modal, InputGroup } from 'react-bootstrap';
+import { Card, Row, Col, Form, Button, Tab, Nav, Table, Modal, InputGroup, Badge, Spinner, Alert } from 'react-bootstrap';
 import { useForm } from 'react-hook-form';
-import { FaPlus, FaEdit, FaTrash, FaSearch } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaSearch, FaRobot, FaCheck, FaTimes, FaEye, FaEyeSlash } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import useAuthStore from '../../store/authStore';
@@ -29,6 +29,15 @@ function Settings() {
   const [editingIndustry, setEditingIndustry] = useState(null);
   const [industryName, setIndustryName] = useState('');
 
+  // AI Settings state
+  const [aiSettings, setAiSettings] = useState({ hasApiKey: false, envConfigured: false, source: 'none', availableModels: [] });
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiApiKey, setAiApiKey] = useState('');
+  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState(null);
+
   const profileForm = useForm();
   const passwordForm = useForm();
   const tenantForm = useForm();
@@ -48,6 +57,12 @@ function Settings() {
       fetchIndustries();
     }
   }, [activeTab, industrySearch]);
+
+  useEffect(() => {
+    if (activeTab === 'ai' && ['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role)) {
+      fetchAiSettings();
+    }
+  }, [activeTab]);
 
   const fetchData = async () => {
     try {
@@ -201,6 +216,78 @@ function Settings() {
     }
   };
 
+  // AI Settings functions
+  const fetchAiSettings = async () => {
+    setAiLoading(true);
+    try {
+      const response = await api.get('/ai/settings');
+      setAiSettings(response.data.data);
+      setSelectedModel(response.data.data.model || 'gpt-4o-mini');
+    } catch (error) {
+      console.error('Failed to fetch AI settings:', error);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const saveAiSettings = async () => {
+    if (!aiApiKey.trim()) {
+      toast.error('Please enter an API key');
+      return;
+    }
+    setAiLoading(true);
+    try {
+      await api.put('/ai/settings', { apiKey: aiApiKey.trim(), model: selectedModel });
+      toast.success('API key saved successfully');
+      setAiApiKey('');
+      setAiTestResult(null);
+      fetchAiSettings();
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'Failed to save API key');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const saveModelSelection = async (newModel) => {
+    setSelectedModel(newModel);
+    try {
+      await api.put('/ai/settings', { model: newModel });
+      toast.success('Model updated');
+      fetchAiSettings();
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'Failed to update model');
+    }
+  };
+
+  const removeAiApiKey = async () => {
+    if (!window.confirm('Are you sure you want to remove the API key?')) return;
+    setAiLoading(true);
+    try {
+      await api.put('/ai/settings', { apiKey: null });
+      toast.success('API key removed');
+      setAiTestResult(null);
+      fetchAiSettings();
+    } catch (error) {
+      toast.error(error.response?.data?.error?.message || 'Failed to remove API key');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const testAiConnection = async () => {
+    setAiTesting(true);
+    setAiTestResult(null);
+    try {
+      const response = await api.post('/ai/test', { apiKey: aiApiKey.trim() || undefined });
+      setAiTestResult(response.data.data);
+    } catch (error) {
+      setAiTestResult({ working: false, error: error.response?.data?.error?.message || 'Test failed' });
+    } finally {
+      setAiTesting(false);
+    }
+  };
+
   const onProfileSubmit = async (data) => {
     try {
       const response = await api.put('/users/me', data);
@@ -270,6 +357,13 @@ function Settings() {
                   <Nav.Item>
                     <Nav.Link eventKey="industries">Industries</Nav.Link>
                   </Nav.Item>
+                  {['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role) && (
+                    <Nav.Item>
+                      <Nav.Link eventKey="ai">
+                        <FaRobot className="me-1" /> AI Settings
+                      </Nav.Link>
+                    </Nav.Item>
+                  )}
                   <Nav.Item>
                     <Nav.Link eventKey="notifications">Notifications</Nav.Link>
                   </Nav.Item>
@@ -518,6 +612,170 @@ function Settings() {
                   </Card.Body>
                 </Card>
               </Tab.Pane>
+
+              {/* AI Settings Tab */}
+              {['TENANT_ADMIN', 'SUPER_ADMIN'].includes(user?.role) && (
+                <Tab.Pane eventKey="ai">
+                  <Card>
+                    <Card.Header>
+                      <h5 className="mb-0">
+                        <FaRobot className="me-2" />
+                        AI Settings (OpenAI)
+                      </h5>
+                    </Card.Header>
+                    <Card.Body>
+                      {aiLoading && !aiSettings ? (
+                        <div className="text-center py-4">
+                          <Spinner animation="border" size="sm" /> Loading...
+                        </div>
+                      ) : (
+                        <>
+                          {/* Current Status */}
+                          <div className="mb-4">
+                            <h6>Current Status</h6>
+                            <div className="d-flex align-items-center gap-2 mb-2">
+                              {aiSettings.hasApiKey || aiSettings.envConfigured ? (
+                                <Badge bg="success">
+                                  <FaCheck className="me-1" /> Configured
+                                </Badge>
+                              ) : (
+                                <Badge bg="warning">
+                                  <FaTimes className="me-1" /> Not Configured
+                                </Badge>
+                              )}
+                              {aiSettings.source === 'database' && (
+                                <Badge bg="info">Using Custom API Key</Badge>
+                              )}
+                              {aiSettings.source === 'environment' && (
+                                <Badge bg="secondary">Using Server Default</Badge>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Model Selection */}
+                          <div className="mb-4">
+                            <h6>Model Selection</h6>
+                            <Form.Group className="mb-3">
+                              <Form.Label>OpenAI Model</Form.Label>
+                              <Form.Select
+                                value={selectedModel}
+                                onChange={(e) => saveModelSelection(e.target.value)}
+                                style={{ maxWidth: '350px' }}
+                              >
+                                {(aiSettings.availableModels || []).map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.name}
+                                  </option>
+                                ))}
+                              </Form.Select>
+                              <Form.Text className="text-muted">
+                                {aiSettings.availableModels?.find(m => m.id === selectedModel)?.description || ''}
+                              </Form.Text>
+                            </Form.Group>
+                          </div>
+
+                          <hr />
+
+                          {/* API Key Configuration */}
+                          <div className="mb-4">
+                            <h6>Configure OpenAI API Key</h6>
+                            <p className="text-muted small">
+                              Enter your OpenAI API key to enable AI-powered template generation.
+                              Your API key is encrypted before storage.
+                            </p>
+
+                            <Form.Group className="mb-3">
+                              <Form.Label>API Key</Form.Label>
+                              <InputGroup>
+                                <Form.Control
+                                  type={showApiKey ? 'text' : 'password'}
+                                  placeholder={aiSettings.hasApiKey ? '••••••••••••••••••••••••' : 'sk-...'}
+                                  value={aiApiKey}
+                                  onChange={(e) => setAiApiKey(e.target.value)}
+                                />
+                                <Button
+                                  variant="outline-secondary"
+                                  onClick={() => setShowApiKey(!showApiKey)}
+                                >
+                                  {showApiKey ? <FaEyeSlash /> : <FaEye />}
+                                </Button>
+                              </InputGroup>
+                              <Form.Text className="text-muted">
+                                Get your API key from{' '}
+                                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+                                  OpenAI Dashboard
+                                </a>
+                              </Form.Text>
+                            </Form.Group>
+
+                            {/* Test Result */}
+                            {aiTestResult && (
+                              <Alert variant={aiTestResult.working ? 'success' : 'danger'} className="mb-3">
+                                {aiTestResult.working ? (
+                                  <>
+                                    <FaCheck className="me-2" />
+                                    Connection successful! Model: {aiTestResult.model}
+                                  </>
+                                ) : (
+                                  <>
+                                    <FaTimes className="me-2" />
+                                    Connection failed: {aiTestResult.error}
+                                  </>
+                                )}
+                              </Alert>
+                            )}
+
+                            <div className="d-flex gap-2">
+                              <Button
+                                variant="outline-primary"
+                                onClick={testAiConnection}
+                                disabled={aiTesting || (!aiApiKey && !aiSettings.hasApiKey)}
+                              >
+                                {aiTesting ? (
+                                  <>
+                                    <Spinner animation="border" size="sm" className="me-1" />
+                                    Testing...
+                                  </>
+                                ) : (
+                                  'Test Connection'
+                                )}
+                              </Button>
+                              <Button
+                                variant="primary"
+                                onClick={saveAiSettings}
+                                disabled={aiLoading || !aiApiKey}
+                              >
+                                {aiLoading ? 'Saving...' : 'Save API Key'}
+                              </Button>
+                              {aiSettings.hasApiKey && (
+                                <Button
+                                  variant="outline-danger"
+                                  onClick={removeAiApiKey}
+                                  disabled={aiLoading}
+                                >
+                                  Remove Key
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+
+                          <hr />
+
+                          {/* Info */}
+                          <div>
+                            <h6>About AI Template Generation</h6>
+                            <p className="text-muted small mb-0">
+                              When enabled, AI will generate multiple unique message variations for your templates.
+                              Each recipient in a campaign will receive a randomly selected variation,
+                              making your outreach feel more personal and less like mass messaging.
+                            </p>
+                          </div>
+                        </>
+                      )}
+                    </Card.Body>
+                  </Card>
+                </Tab.Pane>
+              )}
 
               {/* Notifications Tab */}
               <Tab.Pane eventKey="notifications">

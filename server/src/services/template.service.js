@@ -211,6 +211,43 @@ function preview(template, sampleData = {}) {
   return render(template, context);
 }
 
+/**
+ * Get a random variation from a list of variations
+ * @param {Array} variations - Array of template variations
+ * @returns {Object|null} - Random variation or null if empty
+ */
+function getRandomVariation(variations) {
+  if (!variations || variations.length === 0) {
+    return null;
+  }
+  const randomIndex = Math.floor(Math.random() * variations.length);
+  return variations[randomIndex];
+}
+
+/**
+ * Get template content - either from variation (if AI enabled) or main body
+ * @param {Object} template - Template object with variations
+ * @returns {Object} - { subject, body } to use for rendering
+ */
+function getTemplateContent(template) {
+  // If AI is enabled and variations exist, pick a random variation
+  if (template.useAi && template.variations && template.variations.length > 0) {
+    const variation = getRandomVariation(template.variations);
+    return {
+      subject: variation.subject || template.subject,
+      body: variation.body,
+      variationId: variation.id,
+    };
+  }
+
+  // Otherwise, use the main template body
+  return {
+    subject: template.subject,
+    body: template.body,
+    variationId: null,
+  };
+}
+
 module.exports = {
   render,
   extractVariables,
@@ -218,4 +255,6 @@ module.exports = {
   buildContext,
   preview,
   getNestedValue,
+  getRandomVariation,
+  getTemplateContent,
 };
