@@ -224,16 +224,16 @@ function CampaignList() {
     }
   };
 
-  const fetchExistingRecipients = async (campaignId, page = 1, search = '') => {
+  const fetchExistingRecipients = async (campaignId, page = 1, search = '', clearSelection = false) => {
     setLoadingExisting(true);
     try {
       const params = new URLSearchParams({ page, limit: recipientLimit });
       if (search) params.append('search', search);
       const response = await api.get(`/campaigns/${campaignId}/recipients?${params}`);
       setExistingRecipients(response.data.data);
-      setRecipientTotal(response.data.pagination?.total || response.data.data.length);
+      setRecipientTotal(response.data.meta?.pagination?.total || response.data.data.length);
       setRecipientPage(page);
-      setSelectedRecipients(new Set());
+      if (clearSelection) setSelectedRecipients(new Set());
     } catch (error) {
       console.error('Failed to fetch existing recipients:', error);
     } finally {
@@ -387,7 +387,7 @@ function CampaignList() {
     fetchLeads({});
     fetchIndustries();
     fetchDataSources();
-    fetchExistingRecipients(campaign.id, 1, '');
+    fetchExistingRecipients(campaign.id, 1, '', true);
 
     // Fetch full campaign details to get steps
     try {
@@ -511,7 +511,7 @@ function CampaignList() {
       toast.success(response.data.data.message || 'Recipients added');
       // Refresh existing recipients and switch to that tab
       setRecipientSearch('');
-      fetchExistingRecipients(selectedCampaign.id, 1, '');
+      fetchExistingRecipients(selectedCampaign.id, 1, '', true);
       setRecipientModalTab('existing');
       setSelectedLeads([]);
       fetchCampaigns();
@@ -543,7 +543,7 @@ function CampaignList() {
       toast.success(response.data.data.message || 'Prospect recipients added');
       // Refresh existing recipients and switch to that tab
       setRecipientSearch('');
-      fetchExistingRecipients(selectedCampaign.id, 1, '');
+      fetchExistingRecipients(selectedCampaign.id, 1, '', true);
       setRecipientModalTab('existing');
       if (type === 'telegram') {
         setSelectedProspectGroups([]);
