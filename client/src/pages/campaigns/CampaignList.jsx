@@ -98,6 +98,14 @@ function CampaignList() {
   const [recipientModalTab, setRecipientModalTab] = useState('add'); // 'add', 'existing', or 'prospects'
   const [primaryOnly, setPrimaryOnly] = useState(true); // Default to primary contacts only
 
+  // Recipients search, pagination, and selection
+  const [recipientSearch, setRecipientSearch] = useState('');
+  const [recipientPage, setRecipientPage] = useState(1);
+  const [recipientTotal, setRecipientTotal] = useState(0);
+  const [recipientLimit] = useState(50);
+  const [selectedRecipients, setSelectedRecipients] = useState(new Set());
+  const [removingSelected, setRemovingSelected] = useState(false);
+
   // Prospect groups state (for Telegram campaigns)
   const [prospectGroups, setProspectGroups] = useState([]);
   const [selectedProspectGroups, setSelectedProspectGroups] = useState([]);
@@ -216,11 +224,16 @@ function CampaignList() {
     }
   };
 
-  const fetchExistingRecipients = async (campaignId) => {
+  const fetchExistingRecipients = async (campaignId, page = 1, search = '') => {
     setLoadingExisting(true);
     try {
-      const response = await api.get(`/campaigns/${campaignId}/recipients?limit=100`);
+      const params = new URLSearchParams({ page, limit: recipientLimit });
+      if (search) params.append('search', search);
+      const response = await api.get(`/campaigns/${campaignId}/recipients?${params}`);
       setExistingRecipients(response.data.data);
+      setRecipientTotal(response.data.pagination?.total || response.data.data.length);
+      setRecipientPage(page);
+      setSelectedRecipients(new Set());
     } catch (error) {
       console.error('Failed to fetch existing recipients:', error);
     } finally {
@@ -285,11 +298,30 @@ function CampaignList() {
     try {
       await api.delete(`/campaigns/${selectedCampaign.id}/recipients/${recipientId}`);
       toast.success('Recipient removed');
-      fetchExistingRecipients(selectedCampaign.id);
+      fetchExistingRecipients(selectedCampaign.id, recipientPage, recipientSearch);
       fetchCampaigns();
     } catch (error) {
       console.error('Failed to remove recipient:', error);
       toast.error(error.response?.data?.error?.message || 'Failed to remove recipient');
+    }
+  };
+
+  const handleRemoveSelectedRecipients = async () => {
+    if (!selectedCampaign || selectedRecipients.size === 0) return;
+    if (!window.confirm(`Remove ${selectedRecipients.size} selected recipient(s)?`)) return;
+    setRemovingSelected(true);
+    try {
+      const ids = Array.from(selectedRecipients);
+      await Promise.all(ids.map(id => api.delete(`/campaigns/${selectedCampaign.id}/recipients/${id}`)));
+      toast.success(`${ids.length} recipient(s) removed`);
+      setSelectedRecipients(new Set());
+      fetchExistingRecipients(selectedCampaign.id, recipientPage, recipientSearch);
+      fetchCampaigns();
+    } catch (error) {
+      console.error('Failed to remove selected recipients:', error);
+      toast.error('Failed to remove some recipients');
+    } finally {
+      setRemovingSelected(false);
     }
   };
 
@@ -300,10 +332,39 @@ function CampaignList() {
       const response = await api.delete(`/campaigns/${selectedCampaign.id}/recipients`);
       toast.success(response.data.data.message || 'All recipients removed');
       setExistingRecipients([]);
+      setRecipientTotal(0);
+      setSelectedRecipients(new Set());
       fetchCampaigns();
     } catch (error) {
       console.error('Failed to clear recipients:', error);
       toast.error(error.response?.data?.error?.message || 'Failed to clear recipients');
+    }
+  };
+
+  const handleRecipientSearch = (searchTerm) => {
+    setRecipientSearch(searchTerm);
+    if (selectedCampaign) {
+      fetchExistingRecipients(selectedCampaign.id, 1, searchTerm);
+    }
+  };
+
+  const toggleRecipientSelection = (recipientId) => {
+    setSelectedRecipients(prev => {
+      const next = new Set(prev);
+      if (next.has(recipientId)) {
+        next.delete(recipientId);
+      } else {
+        next.add(recipientId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedRecipients.size === existingRecipients.length) {
+      setSelectedRecipients(new Set());
+    } else {
+      setSelectedRecipients(new Set(existingRecipients.map(r => r.id)));
     }
   };
 
@@ -319,11 +380,14 @@ function CampaignList() {
       search: '',
     });
     setUseFilters(true);
+    setRecipientSearch('');
+    setRecipientPage(1);
+    setSelectedRecipients(new Set());
     setRecipientModalTab(campaign._count?.recipients > 0 ? 'existing' : 'add');
     fetchLeads({});
     fetchIndustries();
     fetchDataSources();
-    fetchExistingRecipients(campaign.id);
+    fetchExistingRecipients(campaign.id, 1, '');
 
     // Fetch full campaign details to get steps
     try {
@@ -446,7 +510,8 @@ function CampaignList() {
       const response = await api.post(`/campaigns/${selectedCampaign.id}/recipients`, payload);
       toast.success(response.data.data.message || 'Recipients added');
       // Refresh existing recipients and switch to that tab
-      fetchExistingRecipients(selectedCampaign.id);
+      setRecipientSearch('');
+      fetchExistingRecipients(selectedCampaign.id, 1, '');
       setRecipientModalTab('existing');
       setSelectedLeads([]);
       fetchCampaigns();
@@ -477,7 +542,8 @@ function CampaignList() {
       const response = await api.post(`/campaigns/${selectedCampaign.id}/recipients`, payload);
       toast.success(response.data.data.message || 'Prospect recipients added');
       // Refresh existing recipients and switch to that tab
-      fetchExistingRecipients(selectedCampaign.id);
+      setRecipientSearch('');
+      fetchExistingRecipients(selectedCampaign.id, 1, '');
       setRecipientModalTab('existing');
       if (type === 'telegram') {
         setSelectedProspectGroups([]);
@@ -1248,7 +1314,7 @@ function CampaignList() {
               onClick={() => setRecipientModalTab('existing')}
             >
               <FaUsers className="me-1" /> Current Recipients
-              <Badge bg="light" text="dark" className="ms-2">{existingRecipients.length}</Badge>
+              <Badge bg="light" text="dark" className="ms-2">{recipientTotal || existingRecipients.length}</Badge>
             </Button>
             <Button
               variant={recipientModalTab === 'add' ? 'success' : 'outline-success'}
@@ -1283,30 +1349,80 @@ function CampaignList() {
           {recipientModalTab === 'existing' ? (
             <>
               {/* Existing Recipients Tab */}
+              {/* Search Bar */}
+              <InputGroup className="mb-3">
+                <InputGroup.Text><FaSearch /></InputGroup.Text>
+                <Form.Control
+                  type="text"
+                  placeholder="Search by name, email, phone, company..."
+                  value={recipientSearch}
+                  onChange={(e) => handleRecipientSearch(e.target.value)}
+                />
+                {recipientSearch && (
+                  <Button variant="outline-secondary" onClick={() => handleRecipientSearch('')}>
+                    <FaTimesCircle />
+                  </Button>
+                )}
+              </InputGroup>
+
               {loadingExisting ? (
                 <div className="text-center py-4">
                   <FaSpinner className="fa-spin me-2" /> Loading recipients...
                 </div>
               ) : existingRecipients.length === 0 ? (
                 <Alert variant="info">
-                  No recipients added yet. Click "Add More" to add leads to this campaign.
+                  {recipientSearch
+                    ? `No recipients found matching "${recipientSearch}".`
+                    : 'No recipients added yet. Click "Add from Leads" to add leads to this campaign.'}
                 </Alert>
               ) : (
                 <>
                   <div className="d-flex justify-content-between align-items-center mb-3">
-                    <span>{existingRecipients.length} recipients in this campaign</span>
-                    <Button
-                      variant="outline-danger"
-                      size="sm"
-                      onClick={handleClearAllRecipients}
-                    >
-                      <FaTrash className="me-1" /> Clear All
-                    </Button>
+                    <span>
+                      {recipientSearch
+                        ? `${recipientTotal} result(s) found`
+                        : `${recipientTotal} recipients in this campaign`}
+                      {existingRecipients.length < recipientTotal && (
+                        <small className="text-muted ms-1">(showing {existingRecipients.length})</small>
+                      )}
+                    </span>
+                    <div className="d-flex gap-2">
+                      {selectedRecipients.size > 0 && selectedCampaign?.status === 'DRAFT' && (
+                        <Button
+                          variant="outline-warning"
+                          size="sm"
+                          onClick={handleRemoveSelectedRecipients}
+                          disabled={removingSelected}
+                        >
+                          <FaTrash className="me-1" />
+                          {removingSelected ? 'Removing...' : `Remove Selected (${selectedRecipients.size})`}
+                        </Button>
+                      )}
+                      {selectedCampaign?.status === 'DRAFT' && (
+                        <Button
+                          variant="outline-danger"
+                          size="sm"
+                          onClick={handleClearAllRecipients}
+                        >
+                          <FaTrash className="me-1" /> Clear All
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
                     <Table size="sm" hover>
                       <thead className="table-light sticky-top">
                         <tr>
+                          {selectedCampaign?.status === 'DRAFT' && (
+                            <th style={{ width: '40px' }}>
+                              <Form.Check
+                                type="checkbox"
+                                checked={selectedRecipients.size === existingRecipients.length && existingRecipients.length > 0}
+                                onChange={toggleSelectAll}
+                                title={selectedRecipients.size === existingRecipients.length ? 'Deselect All' : 'Select All'}
+                              />
+                            </th>
+                          )}
                           <th>Company / Group</th>
                           <th>Contact / Prospect</th>
                           <th>Email / Channel</th>
@@ -1316,7 +1432,16 @@ function CampaignList() {
                       </thead>
                       <tbody>
                         {existingRecipients.map((recipient) => (
-                          <tr key={recipient.id}>
+                          <tr key={recipient.id} className={selectedRecipients.has(recipient.id) ? 'table-active' : ''}>
+                            {selectedCampaign?.status === 'DRAFT' && (
+                              <td>
+                                <Form.Check
+                                  type="checkbox"
+                                  checked={selectedRecipients.has(recipient.id)}
+                                  onChange={() => toggleRecipientSelection(recipient.id)}
+                                />
+                              </td>
+                            )}
                             <td>
                               {recipient.isProspect ? (
                                 <Badge bg="info" className="me-1">Prospect</Badge>
@@ -1324,7 +1449,7 @@ function CampaignList() {
                                 recipient.lead?.companyName || '-'
                               )}
                               {recipient.isProspect && recipient.prospectGroupName && (
-                                <small className="text-muted">{recipient.prospectGroupName}</small>
+                                <small className="text-muted"> {recipient.prospectGroupName}</small>
                               )}
                             </td>
                             <td>
@@ -1382,6 +1507,33 @@ function CampaignList() {
                       </tbody>
                     </Table>
                   </div>
+
+                  {/* Pagination */}
+                  {recipientTotal > recipientLimit && (
+                    <div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
+                      <small className="text-muted">
+                        Page {recipientPage} of {Math.ceil(recipientTotal / recipientLimit)} ({recipientTotal} total)
+                      </small>
+                      <div className="d-flex gap-2">
+                        <Button
+                          variant="outline-secondary"
+                          size="sm"
+                          disabled={recipientPage <= 1}
+                          onClick={() => fetchExistingRecipients(selectedCampaign.id, recipientPage - 1, recipientSearch)}
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          variant="outline-secondary"
+                          size="sm"
+                          disabled={recipientPage >= Math.ceil(recipientTotal / recipientLimit)}
+                          onClick={() => fetchExistingRecipients(selectedCampaign.id, recipientPage + 1, recipientSearch)}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </>

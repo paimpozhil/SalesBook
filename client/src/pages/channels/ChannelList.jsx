@@ -118,8 +118,9 @@ function ChannelList() {
   const [showTelegramModal, setShowTelegramModal] = useState(false);
   const [telegramChannel, setTelegramChannel] = useState(null);
 
-  // Telegram connection status cache
+  // Connection status cache
   const [telegramStatus, setTelegramStatus] = useState({}); // channelId -> 'CONNECTED' | 'DISCONNECTED'
+  const [whatsappStatus, setWhatsappStatus] = useState({}); // channelId -> { status, profile }
 
   useEffect(() => {
     fetchChannels();
@@ -144,13 +145,36 @@ function ChannelList() {
     setTelegramStatus(statuses);
   };
 
+  // Fetch WhatsApp Web status for all WhatsApp Web channels
+  const fetchWhatsAppStatuses = async (channelList) => {
+    const waChannels = channelList.filter(c => c.channelType === 'WHATSAPP_WEB');
+    const statuses = {};
+
+    await Promise.all(
+      waChannels.map(async (channel) => {
+        try {
+          const response = await api.get(`/channels/${channel.id}/whatsapp-web/status`);
+          statuses[channel.id] = {
+            status: response.data.data.status,
+            profile: response.data.data.profile,
+          };
+        } catch {
+          statuses[channel.id] = { status: 'DISCONNECTED', profile: null };
+        }
+      })
+    );
+
+    setWhatsappStatus(statuses);
+  };
+
   const fetchChannels = async () => {
     try {
       const response = await api.get('/channels');
       const channelList = response.data.data;
       setChannels(channelList);
-      // Fetch Telegram statuses in background
+      // Fetch statuses in background
       fetchTelegramStatuses(channelList);
+      fetchWhatsAppStatuses(channelList);
     } catch (error) {
       console.error('Failed to fetch channels:', error);
     } finally {
@@ -360,6 +384,8 @@ function ChannelList() {
   const handleWhatsAppModalClose = () => {
     setShowWhatsAppModal(false);
     setWhatsAppChannel(null);
+    // Refresh status after modal closes
+    fetchWhatsAppStatuses(channels);
   };
 
   const handleTelegramConnect = (channel) => {
@@ -558,12 +584,20 @@ function ChannelList() {
                     <td>
                       {channel.channelType === 'WHATSAPP_WEB' && (
                         <Button
-                          variant="outline-success"
+                          variant={whatsappStatus[channel.id]?.status === 'CONNECTED' ? 'success' : 'outline-success'}
                           size="sm"
                           className="me-1"
                           onClick={() => handleWhatsAppConnect(channel)}
                         >
-                          <FaQrcode className="me-1" /> Connect
+                          {whatsappStatus[channel.id]?.status === 'CONNECTED' ? (
+                            <>
+                              <FaCheckCircle className="me-1" /> Connected
+                            </>
+                          ) : (
+                            <>
+                              <FaQrcode className="me-1" /> Connect
+                            </>
+                          )}
                         </Button>
                       )}
                       {channel.channelType === 'TELEGRAM' && (

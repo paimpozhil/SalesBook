@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button, Badge, Spinner, Alert, Card, Form, Collapse } from 'react-bootstrap';
 import { QRCodeSVG } from 'qrcode.react';
-import { FaWhatsapp, FaQrcode, FaCheckCircle, FaTimesCircle, FaSync, FaTrash, FaCog, FaChevronDown, FaChevronUp } from 'react-icons/fa';
+import { FaWhatsapp, FaQrcode, FaCheckCircle, FaTimesCircle, FaSync, FaCog, FaChevronDown, FaChevronUp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 
@@ -15,7 +15,6 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
   const [qrImage, setQrImage] = useState(null); // Base64 image for headless mode
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [deletingSession, setDeletingSession] = useState(false);
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState(null);
   const pollInterval = useRef(null);
@@ -170,42 +169,25 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
   };
 
   const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect WhatsApp? This will remove the session and you will need to scan the QR code again.')) {
+      return;
+    }
+
     setDisconnecting(true);
     try {
-      await api.post(`/channels/${channelId}/whatsapp-web/disconnect`);
+      // Delete session completely (disconnects + removes saved session)
+      await api.delete(`/channels/${channelId}/whatsapp-web/session`);
       setStatus('disconnected');
       setProfile(null);
       setQrCode(null);
       setQrImage(null);
-      toast.success('WhatsApp Web disconnected');
+      toast.success('WhatsApp disconnected successfully');
       onDisconnected?.();
     } catch (err) {
       console.error('WhatsApp disconnect error:', err);
       toast.error(err.response?.data?.error?.message || 'Failed to disconnect');
     } finally {
       setDisconnecting(false);
-    }
-  };
-
-  const handleDeleteSession = async () => {
-    if (!window.confirm('Are you sure you want to delete this WhatsApp session? You will need to scan the QR code again to reconnect.')) {
-      return;
-    }
-
-    setDeletingSession(true);
-    try {
-      await api.delete(`/channels/${channelId}/whatsapp-web/session`);
-      setStatus('disconnected');
-      setProfile(null);
-      setQrCode(null);
-      setQrImage(null);
-      toast.success('WhatsApp session deleted successfully');
-      onDisconnected?.();
-    } catch (err) {
-      console.error('WhatsApp delete session error:', err);
-      toast.error(err.response?.data?.error?.message || 'Failed to delete session');
-    } finally {
-      setDeletingSession(false);
     }
   };
 
@@ -308,46 +290,21 @@ function WhatsAppWebConnect({ channelId, onConnected, onDisconnected }) {
               </div>
             )}
             <div className="d-flex justify-content-center gap-2">
-              <Button variant="outline-secondary" size="sm" onClick={handleRefresh} disabled={disconnecting || deletingSession}>
+              <Button variant="outline-secondary" size="sm" onClick={handleRefresh} disabled={disconnecting}>
                 <FaSync className="me-1" /> Refresh
               </Button>
-              <Button variant="outline-danger" size="sm" onClick={handleDisconnect} disabled={disconnecting || deletingSession}>
+              <Button variant="outline-danger" size="sm" onClick={handleDisconnect} disabled={disconnecting}>
                 {disconnecting ? (
                   <>
                     <Spinner size="sm" className="me-1" />
                     Disconnecting...
                   </>
                 ) : (
-                  'Disconnect'
-                )}
-              </Button>
-            </div>
-            <p className="text-muted small mt-2 mb-0">
-              Disconnect closes the browser but keeps session. Campaigns can auto-reconnect.
-            </p>
-            <div className="mt-3 pt-2 border-top">
-              <Button
-                variant="link"
-                size="sm"
-                className="text-danger p-0"
-                onClick={handleDeleteSession}
-                disabled={disconnecting || deletingSession}
-              >
-                {deletingSession ? (
                   <>
-                    <Spinner size="sm" className="me-1" />
-                    Deleting Session...
-                  </>
-                ) : (
-                  <>
-                    <FaTrash className="me-1" />
-                    Delete Session
+                    <FaTimesCircle className="me-1" /> Disconnect
                   </>
                 )}
               </Button>
-              <p className="text-muted small mt-1 mb-0">
-                Permanently removes session. You must scan QR again. Stops all campaigns.
-              </p>
             </div>
 
             {/* Settings Section */}

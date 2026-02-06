@@ -760,14 +760,16 @@ router.get(
   [
     param('id').isInt().toInt(),
     query('status').optional(),
+    query('search').optional().isString().trim(),
     query('page').optional().isInt({ min: 1 }).toInt(),
-    query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
+    query('limit').optional().isInt({ min: 1, max: 500 }).toInt(),
     validate,
   ],
   asyncHandler(async (req, res) => {
     const page = req.query.page || 1;
-    const limit = req.query.limit || 20;
+    const limit = req.query.limit || 50;
     const skip = (page - 1) * limit;
+    const search = req.query.search || '';
 
     // Verify campaign belongs to tenant
     const campaign = await prisma.campaign.findFirst({
@@ -778,6 +780,21 @@ router.get(
 
     const where = { campaignId: req.params.id };
     if (req.query.status) where.status = req.query.status;
+
+    // Add search filter
+    if (search) {
+      where.OR = [
+        { contact: { name: { contains: search } } },
+        { contact: { email: { contains: search } } },
+        { contact: { phone: { contains: search } } },
+        { lead: { companyName: { contains: search } } },
+        { whatsappProspect: { name: { contains: search } } },
+        { whatsappProspect: { phone: { contains: search } } },
+        { prospect: { firstName: { contains: search } } },
+        { prospect: { lastName: { contains: search } } },
+        { prospect: { username: { contains: search } } },
+      ];
+    }
 
     const [recipients, total] = await Promise.all([
       prisma.campaignRecipient.findMany({
